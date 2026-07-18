@@ -1,0 +1,71 @@
+import type { ClothingItem, ModelPhoto } from "../types";
+import { blobToBase64, base64ToBlob } from "./image";
+import { categoryLabel } from "../types";
+
+export interface TryOnResult {
+  image: Blob;
+}
+
+export class TryOnError extends Error {
+  constructor(message: string, readonly hint?: string) {
+    super(message);
+    this.name = "TryOnError";
+  }
+}
+
+export async function generateTryOn(
+  model: ModelPhoto,
+  items: ClothingItem[],
+  notes?: string
+): Promise<TryOnResult> {
+  const modelData = await blobToBase64(model.image);
+  const garments = await Promise.all(
+    items.map(async (it) => ({
+      label: `${categoryLabel(it.category)}${it.name ? ` — ${it.name}` : ""}${
+        it.color ? ` (${it.color})` : ""
+      }`,
+      mime: it.image.type || "image/jpeg",
+      data: await blobToBase64(it.image),
+    }))
+  );
+
+  let res: Response;
+  try {
+    res = await fetch("/api/tryon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: { mime: model.image.type || "image/jpeg", data: modelData },
+        garments,
+        notes,
+      }),
+    });
+  } catch {
+    throw new TryOnError(
+      "Couldn't reach the try-on service.",
+      "Are you running the app with the serverless function available? See the README."
+    );
+  }
+
+  let payload: any = null;
+  try {
+    payload = await res.json();
+  } catch {
+    /* ignore */
+  }
+
+  if (!res.ok) {
+    const msg = payload?.error || `Try-on failed (HTTP ${res.status}).`;
+    throw new TryOnError(msg, payload?.hint);
+  }
+
+  if (!payload?.image?.data) {
+    throw new TryOnError(
+      "The try-on service didn't return an image.",
+      payload?.text ? `Model said: ${String(payload.text).slice(0, 300)}` : undefined
+    );
+  }
+
+  const mime = payload.image.mime || "image/png";
+  return { image: base64ToBlob(payload.image.data, mime) };
+}
