@@ -18,10 +18,42 @@ export async function initSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS users (
         id          CHAR(36) PRIMARY KEY,
         email       VARCHAR(255) NOT NULL UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
         created_at  BIGINT NOT NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+    // Invite allowlist: only these emails can sign in. is_admin can manage it.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS allowed_emails (
+        email      VARCHAR(255) PRIMARY KEY,
+        is_admin   TINYINT(1) NOT NULL DEFAULT 0,
+        invited_by VARCHAR(255) NULL,
+        created_at BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    // Short-lived, single-use magic-link tokens (only the hash is stored).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS login_tokens (
+        id         CHAR(36) PRIMARY KEY,
+        email      VARCHAR(255) NOT NULL,
+        token_hash CHAR(64) NOT NULL,
+        expires_at BIGINT NOT NULL,
+        used       TINYINT(1) NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL,
+        INDEX (email)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    // Seed the owner as an admin on the allowlist.
+    const adminEmail = (process.env.ADMIN_EMAIL || "jibril@litemotions.dk")
+      .trim()
+      .toLowerCase();
+    if (adminEmail) {
+      await conn.query(
+        `INSERT INTO allowed_emails (email, is_admin, invited_by, created_at)
+         VALUES (?, 1, 'system', ?)
+         ON DUPLICATE KEY UPDATE is_admin = 1`,
+        [adminEmail, Date.now()]
+      );
+    }
     await conn.query(`
       CREATE TABLE IF NOT EXISTS items (
         id         CHAR(36) PRIMARY KEY,

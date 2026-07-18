@@ -6,6 +6,7 @@ import {
   clearToken,
   getToken,
   me,
+  verifyLink,
   type User,
 } from "./lib/api";
 import { Wardrobe } from "./components/Wardrobe";
@@ -13,6 +14,7 @@ import { MePhoto } from "./components/MePhoto";
 import { StyleStudio } from "./components/StyleStudio";
 import { Lookbook } from "./components/Lookbook";
 import { Auth } from "./components/Auth";
+import { AdminSheet } from "./components/AdminSheet";
 
 type Tab = "wardrobe" | "me" | "studio" | "looks";
 
@@ -36,6 +38,8 @@ export function App() {
     cloudEnabled() ? "checking" : "in"
   );
   const [user, setUser] = useState<User | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const reloadItems = useCallback(() => {
     getItems().then(setItems).catch(() => {});
@@ -53,9 +57,36 @@ export function App() {
     reloadLooks();
   }, [reloadItems, reloadModels, reloadLooks]);
 
-  // Validate a saved session on first load (cloud mode only).
+  // On first load (cloud mode): consume a magic-link token if present,
+  // otherwise validate any saved session.
   useEffect(() => {
     if (!cloudEnabled()) return;
+    const url = new URL(window.location.href);
+    const linkToken = url.searchParams.get("token");
+    const stripToken = () => {
+      url.searchParams.delete("token");
+      window.history.replaceState(
+        {},
+        "",
+        url.pathname + url.search + url.hash
+      );
+    };
+
+    if (linkToken) {
+      verifyLink(linkToken)
+        .then((u) => {
+          setUser(u);
+          setAuthState("in");
+        })
+        .catch((err) => {
+          clearToken();
+          setAuthNotice(err?.message || "That sign-in link didn't work.");
+          setAuthState("out");
+        })
+        .finally(stripToken);
+      return;
+    }
+
     if (!getToken()) {
       setAuthState("out");
       return;
@@ -76,10 +107,6 @@ export function App() {
     if (authState === "in") reloadAll();
   }, [authState, reloadAll]);
 
-  function onAuthed(u: User) {
-    setUser(u);
-    setAuthState("in");
-  }
   function signOut() {
     clearToken();
     setUser(null);
@@ -127,7 +154,7 @@ export function App() {
     );
   }
   if (authState === "out") {
-    return <Auth onAuthed={onAuthed} />;
+    return <Auth notice={authNotice} />;
   }
 
   return (
@@ -138,6 +165,15 @@ export function App() {
           <h1>Digital Wardrobe</h1>
           <div className="sub">Mix, match & try it on — you</div>
         </div>
+        {user?.isAdmin && (
+          <button
+            className="btn ghost"
+            style={{ padding: "6px 10px", fontSize: 12 }}
+            onClick={() => setShowAdmin(true)}
+          >
+            Access
+          </button>
+        )}
         {user && (
           <button
             className="btn ghost"
@@ -174,6 +210,13 @@ export function App() {
 
       {toast && (
         <div className={`toast ${toast.error ? "error" : ""}`}>{toast.msg}</div>
+      )}
+
+      {showAdmin && user && (
+        <AdminSheet
+          currentEmail={user.email}
+          onClose={() => setShowAdmin(false)}
+        />
       )}
 
       <nav className="tabbar">

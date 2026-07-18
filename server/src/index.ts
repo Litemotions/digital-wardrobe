@@ -6,12 +6,18 @@ import type { Response } from "express";
 import type { RowDataPacket } from "mysql2";
 import { pool, initSchema } from "./db.js";
 import {
-  hashPassword,
-  checkPassword,
   signToken,
+  makeMagicToken,
+  hashToken,
   requireAuth,
+  requireAdmin,
+  isAdminUser,
   type AuthedRequest,
 } from "./auth.js";
+import { sendMagicLink } from "./mailer.js";
+
+const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
+const TOKEN_TTL_MS = 15 * 60 * 1000;
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -42,46 +48,87 @@ function bad(res: Response, code: number, msg: string) {
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// --- Auth -------------------------------------------------------------
-app.post("/auth/register", async (req, res) => {
+// --- Auth (passwordless magic link, invite-only) ----------------------
+async function isAllowed(email: string): Promise<boolean> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    "SELECT email FROM allowed_emails WHERE email = ?",
+    [email]
+  );
+  return rows.length > 0;
+}
+
+// Request a sign-in link. Only allow-listed emails receive one.
+app.post("/auth/request-link", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
-  const password = String(req.body?.password || "");
   if (!email || !email.includes("@")) return bad(res, 400, "Enter a valid email.");
-  if (password.length < 8)
-    return bad(res, 400, "Password must be at least 8 characters.");
   try {
-    const [existing] = await pool.execute<RowDataPacket[]>(
-      "SELECT id FROM users WHERE email = ?",
-      [email]
-    );
-    if (existing.length) return bad(res, 409, "That email is already registered.");
-    const id = randomUUID();
+    if (!(await isAllowed(email))) {
+      return bad(
+        res,
+        403,
+        "This email isn't on the invite list yet. Ask the owner to add you."
+      );
+    }
+    const { raw, hash } = makeMagicToken();
+    // Invalidate previous links for this email, then store the new one.
+    await pool.execute("DELETE FROM login_tokens WHERE email = ?", [email]);
     await pool.execute(
-      "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
-      [id, email, await hashPassword(password), Date.now()]
+      `INSERT INTO login_tokens (id, email, token_hash, expires_at, used, created_at)
+       VALUES (?, ?, ?, ?, 0, ?)`,
+      [randomUUID(), email, hash, Date.now() + TOKEN_TTL_MS, Date.now()]
     );
-    res.json({ token: signToken(id), user: { id, email } });
+    const base = APP_URL || (req.headers.origin as string) || "";
+    const link = `${base}/?token=${raw}`;
+    await sendMagicLink(email, link);
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
-    bad(res, 500, "Could not create the account.");
+    bad(res, 500, "Could not send the sign-in link.");
   }
 });
 
-app.post("/auth/login", async (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
-  const password = String(req.body?.password || "");
+// Exchange a magic-link token for a session.
+app.post("/auth/verify", async (req, res) => {
+  const raw = String(req.body?.token || "");
+  if (!raw) return bad(res, 400, "Missing token.");
   try {
+    const hash = hashToken(raw);
     const [rows] = await pool.execute<RowDataPacket[]>(
-      "SELECT id, password_hash FROM users WHERE email = ?",
+      "SELECT id, email, expires_at, used FROM login_tokens WHERE token_hash = ?",
+      [hash]
+    );
+    const row = rows[0];
+    if (!row || row.used || Number(row.expires_at) < Date.now())
+      return bad(res, 401, "This sign-in link is invalid or has expired.");
+    await pool.execute("UPDATE login_tokens SET used = 1 WHERE id = ?", [row.id]);
+
+    const email = String(row.email);
+    // Guard: email might have been removed from the allowlist meanwhile.
+    if (!(await isAllowed(email)))
+      return bad(res, 403, "Your access has been removed.");
+
+    // Find or create the user.
+    let [users] = await pool.execute<RowDataPacket[]>(
+      "SELECT id FROM users WHERE email = ?",
       [email]
     );
-    const user = rows[0];
-    if (!user || !(await checkPassword(password, user.password_hash)))
-      return bad(res, 401, "Wrong email or password.");
-    res.json({ token: signToken(user.id), user: { id: user.id, email } });
+    let userId: string;
+    if (users.length) {
+      userId = users[0].id;
+    } else {
+      userId = randomUUID();
+      await pool.execute(
+        "INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)",
+        [userId, email, Date.now()]
+      );
+    }
+    res.json({
+      token: signToken(userId),
+      user: { id: userId, email, isAdmin: await isAdminUser(userId) },
+    });
   } catch (err) {
     console.error(err);
-    bad(res, 500, "Could not sign in.");
+    bad(res, 500, "Could not verify the sign-in link.");
   }
 });
 
@@ -91,8 +138,68 @@ app.get("/auth/me", requireAuth, async (req: AuthedRequest, res) => {
     [req.userId!]
   );
   if (!rows.length) return bad(res, 404, "User not found.");
-  res.json({ user: { id: rows[0].id, email: rows[0].email } });
+  res.json({
+    user: {
+      id: rows[0].id,
+      email: rows[0].email,
+      isAdmin: await isAdminUser(req.userId!),
+    },
+  });
 });
+
+// --- Admin: manage the invite allowlist -------------------------------
+app.get("/admin/allowed", requireAdmin, async (_req, res) => {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    "SELECT email, is_admin, invited_by, created_at FROM allowed_emails ORDER BY created_at ASC"
+  );
+  res.json(
+    rows.map((r) => ({
+      email: r.email,
+      isAdmin: !!r.is_admin,
+      invitedBy: r.invited_by || undefined,
+      createdAt: Number(r.created_at),
+    }))
+  );
+});
+
+app.post("/admin/allowed", requireAdmin, async (req: AuthedRequest, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const isAdmin = req.body?.isAdmin ? 1 : 0;
+  if (!email || !email.includes("@")) return bad(res, 400, "Enter a valid email.");
+  const [me] = await pool.execute<RowDataPacket[]>(
+    "SELECT email FROM users WHERE id = ?",
+    [req.userId!]
+  );
+  const inviter = me[0]?.email || "admin";
+  try {
+    await pool.execute(
+      `INSERT INTO allowed_emails (email, is_admin, invited_by, created_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE is_admin = VALUES(is_admin)`,
+      [email, isAdmin, inviter, Date.now()]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    bad(res, 500, "Could not add that email.");
+  }
+});
+
+app.delete(
+  "/admin/allowed/:email",
+  requireAdmin,
+  async (req: AuthedRequest, res) => {
+    const email = decodeURIComponent(req.params.email).trim().toLowerCase();
+    const [me] = await pool.execute<RowDataPacket[]>(
+      "SELECT email FROM users WHERE id = ?",
+      [req.userId!]
+    );
+    if (me[0]?.email === email)
+      return bad(res, 400, "You can't remove your own access.");
+    await pool.execute("DELETE FROM allowed_emails WHERE email = ?", [email]);
+    res.json({ ok: true });
+  }
+);
 
 // --- Generic image-owning resource helpers ----------------------------
 type Kind = "item" | "model" | "look";

@@ -9,6 +9,14 @@ const TOKEN_KEY = "dw.token";
 export interface User {
   id: string;
   email: string;
+  isAdmin?: boolean;
+}
+
+export interface AllowedEmail {
+  email: string;
+  isAdmin: boolean;
+  invitedBy?: string;
+  createdAt: number;
 }
 
 export function cloudEnabled(): boolean {
@@ -48,19 +56,17 @@ async function req(path: string, options: RequestInit = {}): Promise<any> {
   return data;
 }
 
-// --- Auth -------------------------------------------------------------
-export async function register(email: string, password: string): Promise<User> {
-  const data = await req("/auth/register", {
+// --- Auth (magic link) ------------------------------------------------
+export async function requestLink(email: string): Promise<void> {
+  await req("/auth/request-link", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email }),
   });
-  setToken(data.token);
-  return data.user;
 }
-export async function login(email: string, password: string): Promise<User> {
-  const data = await req("/auth/login", {
+export async function verifyLink(token: string): Promise<User> {
+  const data = await req("/auth/verify", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ token }),
   });
   setToken(data.token);
   return data.user;
@@ -68,6 +74,22 @@ export async function login(email: string, password: string): Promise<User> {
 export async function me(): Promise<User> {
   const data = await req("/auth/me");
   return data.user;
+}
+
+// --- Admin: invite allowlist -----------------------------------------
+export async function listAllowed(): Promise<AllowedEmail[]> {
+  return req("/admin/allowed");
+}
+export async function addAllowed(email: string, isAdmin = false): Promise<void> {
+  await req("/admin/allowed", {
+    method: "POST",
+    body: JSON.stringify({ email, isAdmin }),
+  });
+}
+export async function removeAllowed(email: string): Promise<void> {
+  await req(`/admin/allowed/${encodeURIComponent(email)}`, {
+    method: "DELETE",
+  });
 }
 
 // --- Items ------------------------------------------------------------

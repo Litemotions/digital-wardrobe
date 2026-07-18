@@ -38,19 +38,47 @@ The [`server/`](./server) folder doubles as a HA add-on (it contains a
 MariaDB add-on directly over HA's internal network (`core-mariadb`).
 
 1. Get the `server/` folder onto your HA machine's `/addons/` directory, in a
-   folder named `wardrobe_api`, i.e. `/addons/wardrobe_api/` (use the **Samba**
-   or **Studio Code Server / File editor** add-on to copy the files there).
+   folder named `wardrobe_api`, i.e. `/addons/wardrobe_api/`. Use the **Studio
+   Code Server** (or File editor / Samba) add-on to create that folder and paste
+   the files in.
 2. **Settings → Add-ons → Add-on Store → ⋮ (top right) → Check for updates**,
    then look for **Local add-ons → Digital Wardrobe API** and click **Install**.
 3. Open the add-on's **Configuration** tab and set:
    - `db_host: core-mariadb`
    - `db_name: wardrobe`, `db_user: wardrobe`, `db_password:` *(the one you set)*
    - `jwt_secret:` a long random string (any ~40+ random characters)
+   - `admin_email: jibril@litemotions.dk` *(seeded as the first admin)*
+   - `app_url: https://digital-wardrobe-sable.vercel.app` *(used to build the
+     magic-link URL)*
    - `allowed_origins: https://digital-wardrobe-sable.vercel.app`
+   - `smtp_*`: your email sending details (see **Magic-link email** below).
+     Leave blank at first — links get printed to the add-on **Log** so you can
+     bootstrap your own sign-in before email is configured.
 4. **Start** the add-on, then check the **Log** tab — you should see
    `Digital Wardrobe API listening on :8080`.
 
 The API is now reachable at `http://<your-home-assistant-ip>:8080`.
+
+### Magic-link email (SMTP)
+
+Sign-in is passwordless: users request a link and receive it by email. To send
+real emails, set these in the add-on config (any SMTP provider works):
+
+```
+smtp_host: smtp.gmail.com
+smtp_port: 587
+smtp_user: you@yourdomain.com
+smtp_password: <an app password, not your normal password>
+smtp_from: Digital Wardrobe <you@yourdomain.com>
+```
+
+> With Gmail/Google Workspace, create an **App Password** (Account → Security →
+> 2-Step Verification → App passwords) and use that as `smtp_password`.
+
+**Before** email is set up, you can still sign yourself in: request a link in the
+app, then open the add-on **Log** tab — the link is printed there. Access is
+invite-only; `admin_email` is added automatically, and you can invite others
+from the app (the **Access** button in the header).
 
 ### Option B — Docker (non-HA-OS machines)
 
@@ -68,21 +96,37 @@ curl http://localhost:8080/health      # -> {"ok":true}
 
 Pick one:
 
-### Option A — Home Assistant "Cloudflared" add-on (recommended, needs a domain on Cloudflare)
+### Option 0 — you already expose Home Assistant with a reverse proxy
+
+If HA is already on the internet via **Nginx Proxy Manager**, **Caddy**, or
+**Traefik** (i.e. you self-host the exposure, not Nabu Casa Cloud), just add one
+proxy host:
+
+- Domain: `wardrobe.lightmotions.dk`
+- Forward to: `http://<your-home-assistant-ip>:8080`
+- Enable SSL (Let's Encrypt) and "Websockets" if offered.
+
+Then create a DNS record for `wardrobe.lightmotions.dk` pointing at the same
+place your other HA hostname points. No tunnel needed — skip to step 4.
+
+> Note: **Nabu Casa Cloud only exposes the HA UI**, not arbitrary add-on ports,
+> so it can't publish this API — use the Cloudflared add-on (Option A) instead.
+
+### Option A — Home Assistant "Cloudflared" add-on (needs a domain on Cloudflare)
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add
    `https://github.com/brenner-tobias/ha-addons`, then install **Cloudflared**.
 2. In its config, set your `external_hostname` (for HA) and add an
    `additional_hosts` entry:
    ```yaml
+   external_hostname: ha.lightmotions.dk
    additional_hosts:
-     - hostname: wardrobe.yourdomain.com
-       service: http://<api-host-ip>:8080
+     - hostname: wardrobe.lightmotions.dk
+       service: http://<your-home-assistant-ip>:8080
    ```
-   (use `homeassistant.local` / the host IP running the API server).
 3. Start the add-on — it creates the DNS record and tunnel automatically.
 
-Your API is now at `https://wardrobe.yourdomain.com`.
+Your API is now at `https://wardrobe.lightmotions.dk`.
 
 ### Option B — standalone `cloudflared` (needs a domain on Cloudflare)
 
@@ -110,13 +154,18 @@ but it changes every run — don't use it long-term.
 
 ## 4. Point the app at your API
 
-1. In **Vercel → your project → Settings → Environment Variables**, add:
-   - `VITE_API_BASE` = `https://wardrobe.yourdomain.com` (no trailing slash)
-2. Make sure the server's `ALLOWED_ORIGINS` (in `server/.env`) matches your
-   Vercel app URL, and restart the server (`docker compose up -d`).
-3. **Redeploy** the Vercel app (Vite bakes `VITE_` vars at build time, so a
+1. Verify the API is reachable: open `https://wardrobe.lightmotions.dk/health`
+   → you should see `{"ok":true}`.
+2. In **Vercel → your project → Settings → Environment Variables**, add:
+   - `VITE_API_BASE` = `https://wardrobe.lightmotions.dk` (no trailing slash)
+3. Make sure the add-on's `allowed_origins` and `app_url` match your Vercel app
+   URL; restart the add-on if you changed them.
+4. **Redeploy** the Vercel app (Vite bakes `VITE_` vars at build time, so a
    redeploy is required after changing it).
-4. Open the app → you'll see a **sign-in screen** → create your account.
+5. Open the app → **sign-in screen** → enter `jibril@litemotions.dk` → get the
+   magic link (by email, or from the add-on **Log** if SMTP isn't set up yet) →
+   you're in. Use the **Access** button (top-right, admins only) to invite
+   others.
 
 Everything now saves to your MariaDB and syncs across every device you sign in
 on. With `VITE_API_BASE` unset, the app falls back to on-device (offline) mode.
@@ -124,7 +173,7 @@ on. With `VITE_API_BASE` unset, the app falls back to on-device (offline) mode.
 ## Security notes
 
 - MariaDB itself is never exposed to the internet — only the auth-protected API.
+- Access is invite-only (allowlist) with passwordless magic-link sign-in.
 - Use a strong `JWT_SECRET` and DB password.
 - Image URLs carry the session token as a `?token=` query param (browsers can't
-  send auth headers on `<img>` tags). For extra hardening, put **Cloudflare
-  Access** in front of `wardrobe.yourdomain.com`.
+  send auth headers on `<img>` tags). Keep your API behind HTTPS.

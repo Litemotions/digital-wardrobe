@@ -1,31 +1,35 @@
 import type { NextFunction, Request, Response } from "express";
-import bcrypt from "bcryptjs";
+import { createHash, randomBytes } from "node:crypto";
 import jwt from "jsonwebtoken";
+import type { RowDataPacket } from "mysql2";
+import { pool } from "./db.js";
 
 const SECRET = process.env.JWT_SECRET || "";
 if (!SECRET) {
   console.warn(
-    "[warn] JWT_SECRET is not set — using an insecure default. Set a long random JWT_SECRET in production."
+    "[warn] JWT_SECRET is not set — using an insecure default. Set a long random JWT_SECRET."
   );
 }
 const EFFECTIVE_SECRET = SECRET || "insecure-dev-secret";
 
-export function hashPassword(pw: string): Promise<string> {
-  return bcrypt.hash(pw, 10);
-}
-export function checkPassword(pw: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(pw, hash);
-}
 export function signToken(userId: string): string {
   return jwt.sign({ uid: userId }, EFFECTIVE_SECRET, { expiresIn: "30d" });
+}
+
+// Magic-link tokens: return the raw token (goes in the email link) and its
+// hash (stored in the DB). We never store the raw token.
+export function makeMagicToken(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString("hex");
+  return { raw, hash: hashToken(raw) };
+}
+export function hashToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
 }
 
 export interface AuthedRequest extends Request {
   userId?: string;
 }
 
-// Accept the token from the Authorization header (normal API calls) or from a
-// ?token= query param (used by <img> tags, which can't send headers).
 export function requireAuth(
   req: AuthedRequest,
   res: Response,
@@ -45,4 +49,25 @@ export function requireAuth(
   } catch {
     res.status(401).json({ error: "Session expired. Please sign in again." });
   }
+}
+
+export async function isAdminUser(userId: string): Promise<boolean> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT ae.is_admin FROM allowed_emails ae
+     JOIN users u ON u.email = ae.email
+     WHERE u.id = ?`,
+    [userId]
+  );
+  return rows.length > 0 && !!rows[0].is_admin;
+}
+
+export function requireAdmin(
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  requireAuth(req, res, async () => {
+    if (await isAdminUser(req.userId!)) return next();
+    res.status(403).json({ error: "Admins only." });
+  });
 }

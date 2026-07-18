@@ -12,6 +12,13 @@ const MAP: Record<string, string> = {
   db_password: "DB_PASSWORD",
   jwt_secret: "JWT_SECRET",
   allowed_origins: "ALLOWED_ORIGINS",
+  app_url: "APP_URL",
+  admin_email: "ADMIN_EMAIL",
+  smtp_host: "SMTP_HOST",
+  smtp_port: "SMTP_PORT",
+  smtp_user: "SMTP_USER",
+  smtp_password: "SMTP_PASSWORD",
+  smtp_from: "SMTP_FROM",
 };
 
 if (existsSync(OPTIONS_PATH)) {
