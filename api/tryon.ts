@@ -1,15 +1,22 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 // Serverless virtual try-on. Takes a photo of the person plus one or more
-// garment photos and asks a Gemini image model to render the person wearing
-// the outfit. The API key never leaves the server.
+// garment photos and asks an AI image model to render the person wearing the
+// outfit. API keys never leave the server.
 //
-// Configure via environment variables:
-//   GEMINI_API_KEY      (required)  your Google AI Studio key
-//   GEMINI_IMAGE_MODEL  (optional)  defaults to gemini-2.5-flash-image
+// Two providers are supported. The one used is chosen by TRYON_PROVIDER, or
+// auto-detected: OpenAI if OPENAI_API_KEY is set, otherwise Gemini.
+//
+//   OpenAI  — set OPENAI_API_KEY   (model: gpt-image-1, override w/ OPENAI_IMAGE_MODEL)
+//   Gemini  — set GEMINI_API_KEY   (model: gemini-2.5-flash-image, override w/ GEMINI_IMAGE_MODEL)
+//   TRYON_PROVIDER          (optional)  "openai" | "gemini" to force one
+//   OPENAI_IMAGE_QUALITY    (optional)  "low" | "medium" | "high" (default high)
+//   OPENAI_IMAGE_SIZE       (optional)  e.g. 1024x1536 (portrait, default)
 
-const DEFAULT_MODEL = "gemini-2.5-flash-image";
-const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-image";
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const OPENAI_DEFAULT_MODEL = "gpt-image-1";
+const OPENAI_EDITS_URL = "https://api.openai.com/v1/images/edits";
 
 interface InlineImage {
   mime: string;
@@ -26,48 +33,36 @@ interface TryOnBody {
   notes?: string;
 }
 
+interface EngineResult {
+  mime: string;
+  data: string; // base64
+}
+
+class EngineError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly hint?: string,
+    readonly text?: string
+  ) {
+    super(message);
+  }
+}
+
 export const config = {
   api: {
     bodyParser: { sizeLimit: "10mb" },
   },
 };
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed." });
-    return;
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    res.status(503).json({
-      error: "Try-on engine is not configured yet.",
-      hint: "Set the GEMINI_API_KEY environment variable (from Google AI Studio) on the server.",
-    });
-    return;
-  }
-
-  const body = req.body as TryOnBody | undefined;
-  if (!body?.model?.data || !Array.isArray(body.garments) || body.garments.length === 0) {
-    res.status(400).json({
-      error: "Need a photo of you and at least one clothing item.",
-    });
-    return;
-  }
-
-  const model = process.env.GEMINI_IMAGE_MODEL || DEFAULT_MODEL;
-
+function buildPrompt(body: TryOnBody): string {
   const garmentList = body.garments
     .map((g, i) => `${i + 1}. ${g.label}`)
     .join("\n");
-
-  const prompt = [
+  return [
     "You are a virtual try-on assistant.",
     "The FIRST image is a photo of a real person.",
-    "The following images are individual clothing items to put on that person:",
+    "The remaining images are individual clothing items to put on that person:",
     garmentList,
     "",
     "Generate ONE photorealistic image of the SAME person now wearing these",
@@ -78,11 +73,96 @@ export default async function handler(
     "not add text or watermarks.",
     body.notes ? `\nStyling notes from the user: ${body.notes}` : "",
   ].join("\n");
+}
+
+function friendlyBillingHint(message: string): string | undefined {
+  const m = message.toLowerCase();
+  if (
+    m.includes("quota") ||
+    m.includes("billing") ||
+    m.includes("insufficient_quota") ||
+    m.includes("exceeded your current")
+  ) {
+    return "This usually means billing isn't enabled (or is exhausted) on your API key's account. Check your plan/billing and try again.";
+  }
+  return undefined;
+}
+
+// --- OpenAI (gpt-image-1 image edits) ---------------------------------
+async function runOpenAI(
+  apiKey: string,
+  body: TryOnBody
+): Promise<EngineResult> {
+  const model = process.env.OPENAI_IMAGE_MODEL || OPENAI_DEFAULT_MODEL;
+  const quality = process.env.OPENAI_IMAGE_QUALITY || "high";
+  const size = process.env.OPENAI_IMAGE_SIZE || "1024x1536";
+
+  const form = new FormData();
+  form.append("model", model);
+  form.append("prompt", buildPrompt(body));
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+
+  const person = Buffer.from(body.model.data, "base64");
+  form.append(
+    "image[]",
+    new Blob([person], { type: body.model.mime || "image/png" }),
+    "person.png"
+  );
+  body.garments.forEach((g, i) => {
+    const buf = Buffer.from(g.data, "base64");
+    form.append(
+      "image[]",
+      new Blob([buf], { type: g.mime || "image/png" }),
+      `garment-${i + 1}.png`
+    );
+  });
+
+  let res: Response;
+  try {
+    res = await fetch(OPENAI_EDITS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+  } catch (err: any) {
+    throw new EngineError(502, "Could not reach OpenAI.", String(err?.message || err));
+  }
+
+  const json: any = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = json?.error?.message || `OpenAI returned HTTP ${res.status}.`;
+    throw new EngineError(502, "The image model rejected the request.", friendlyBillingHint(message) || message);
+  }
+
+  const b64 = json?.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new EngineError(
+      502,
+      "OpenAI did not return an image.",
+      "Try a clearer, full-body photo, or fewer items at once."
+    );
+  }
+  return { mime: "image/png", data: b64 };
+}
+
+// --- Gemini (2.5 Flash Image) -----------------------------------------
+async function runGemini(
+  apiKey: string,
+  body: TryOnBody
+): Promise<EngineResult> {
+  const model = process.env.GEMINI_IMAGE_MODEL || GEMINI_DEFAULT_MODEL;
 
   const parts: any[] = [
-    { text: prompt },
+    { text: buildPrompt(body) },
     { text: "Person:" },
-    { inlineData: { mimeType: body.model.mime || "image/jpeg", data: body.model.data } },
+    {
+      inlineData: {
+        mimeType: body.model.mime || "image/jpeg",
+        data: body.model.data,
+      },
+    },
   ];
   for (const g of body.garments) {
     parts.push({ text: g.label });
@@ -91,11 +171,13 @@ export default async function handler(
     });
   }
 
-  const url = `${API_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${apiKey}`;
 
-  let geminiRes: Response;
+  let res: Response;
   try {
-    geminiRes = await fetch(url, {
+    res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -104,49 +186,97 @@ export default async function handler(
       }),
     });
   } catch (err: any) {
-    res.status(502).json({
-      error: "Could not reach the image model.",
-      hint: String(err?.message || err),
-    });
-    return;
+    throw new EngineError(502, "Could not reach the image model.", String(err?.message || err));
   }
 
-  const json: any = await geminiRes.json().catch(() => null);
-
-  if (!geminiRes.ok) {
+  const json: any = await res.json().catch(() => null);
+  if (!res.ok) {
     const message =
-      json?.error?.message || `Image model returned HTTP ${geminiRes.status}.`;
-    res.status(502).json({
-      error: "The image model rejected the request.",
-      hint: message,
-    });
-    return;
+      json?.error?.message || `Image model returned HTTP ${res.status}.`;
+    throw new EngineError(502, "The image model rejected the request.", friendlyBillingHint(message) || message);
   }
 
-  const responseParts: any[] =
-    json?.candidates?.[0]?.content?.parts ?? [];
+  const responseParts: any[] = json?.candidates?.[0]?.content?.parts ?? [];
   const imagePart = responseParts.find(
     (p) => p?.inlineData?.data || p?.inline_data?.data
   );
   const inline = imagePart?.inlineData || imagePart?.inline_data;
-
   if (!inline?.data) {
     const text = responseParts
       .map((p) => p?.text)
       .filter(Boolean)
       .join(" ");
-    res.status(502).json({
-      error: "The model did not return an image.",
-      text: text || undefined,
-      hint: "Try a clearer, full-body photo of yourself, or fewer items at once.",
+    throw new EngineError(
+      502,
+      "The model did not return an image.",
+      "Try a clearer, full-body photo of yourself, or fewer items at once.",
+      text || undefined
+    );
+  }
+  return {
+    mime: inline.mimeType || inline.mime_type || "image/png",
+    data: inline.data,
+  };
+}
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed." });
+    return;
+  }
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const provider =
+    process.env.TRYON_PROVIDER?.toLowerCase() ||
+    (openaiKey ? "openai" : geminiKey ? "gemini" : "");
+
+  if (!provider) {
+    res.status(503).json({
+      error: "Try-on engine is not configured yet.",
+      hint: "Set OPENAI_API_KEY (or GEMINI_API_KEY) as an environment variable on the server.",
     });
     return;
   }
 
-  res.status(200).json({
-    image: {
-      mime: inline.mimeType || inline.mime_type || "image/png",
-      data: inline.data,
-    },
-  });
+  const body = req.body as TryOnBody | undefined;
+  if (
+    !body?.model?.data ||
+    !Array.isArray(body.garments) ||
+    body.garments.length === 0
+  ) {
+    res.status(400).json({
+      error: "Need a photo of you and at least one clothing item.",
+    });
+    return;
+  }
+
+  try {
+    let result: EngineResult;
+    if (provider === "openai") {
+      if (!openaiKey)
+        throw new EngineError(503, "OPENAI_API_KEY is not set on the server.");
+      result = await runOpenAI(openaiKey, body);
+    } else if (provider === "gemini") {
+      if (!geminiKey)
+        throw new EngineError(503, "GEMINI_API_KEY is not set on the server.");
+      result = await runGemini(geminiKey, body);
+    } else {
+      throw new EngineError(400, `Unknown TRYON_PROVIDER "${provider}".`);
+    }
+    res.status(200).json({ image: result });
+  } catch (err) {
+    if (err instanceof EngineError) {
+      res.status(err.status).json({
+        error: err.message,
+        hint: err.hint,
+        text: err.text,
+      });
+      return;
+    }
+    res.status(500).json({ error: "Unexpected error generating the look." });
+  }
 }

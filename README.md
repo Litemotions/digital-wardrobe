@@ -25,8 +25,10 @@ laid flat.
 | --- | --- |
 | Frontend | Vite + React + TypeScript |
 | Storage | IndexedDB (via `idb`) — stays on your device |
-| Try-on | `/api/tryon` serverless function → Google Gemini 2.5 Flash Image |
+| Try-on | `/api/tryon` serverless function → OpenAI `gpt-image-1` or Google Gemini 2.5 Flash Image |
 
+The try-on function supports two providers and auto-selects **OpenAI** if
+`OPENAI_API_KEY` is set, otherwise **Gemini**. Set `TRYON_PROVIDER` to force one.
 Only the try-on request leaves your device, and it goes straight to the image
 model. Your API key lives on the server, never in the browser.
 
@@ -36,8 +38,10 @@ model. Your API key lives on the server, never in the browser.
 npm install
 ```
 
-You need a Google AI Studio API key for the try-on feature — get one free at
-<https://aistudio.google.com/apikey>.
+You need an image-model API key for the try-on feature — either an **OpenAI**
+key (<https://platform.openai.com/api-keys>, billing enabled) or a **Google AI
+Studio** key (<https://aistudio.google.com/apikey>, billing enabled — image
+generation isn't in the free tier). See `.env.example` for all options.
 
 ### Run locally
 
@@ -58,11 +62,10 @@ You can also run just the UI with `npm run dev` (Vite proxies `/api` to
 Deploy to [Vercel](https://vercel.com):
 
 1. Import this repo.
-2. Add an environment variable **`GEMINI_API_KEY`** with your key.
+2. Add an environment variable **`OPENAI_API_KEY`** (or **`GEMINI_API_KEY`**).
 3. Deploy. The Vite frontend and the `/api/tryon` function ship together.
 
-Optionally set **`GEMINI_IMAGE_MODEL`** to override the default
-(`gemini-2.5-flash-image`).
+See `.env.example` for optional overrides (model, quality, size, provider).
 
 ## Tips for good try-on results
 
