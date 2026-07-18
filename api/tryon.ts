@@ -66,11 +66,15 @@ function buildPrompt(body: TryOnBody): string {
     garmentList,
     "",
     "Generate ONE photorealistic image of the SAME person now wearing these",
-    "items together as a complete outfit. Keep their face, hairstyle, body",
-    "shape, skin tone, pose, and the background exactly the same. Replace only",
-    "their clothing. Make the garments drape naturally with realistic fit,",
-    "folds, lighting and shadows. Do not change the person's identity, and do",
-    "not add text or watermarks.",
+    "items together as a complete outfit.",
+    "",
+    "CRITICAL: the person's face and identity must stay EXACTLY as in the first",
+    "photo — the same facial features, bone structure, skin tone, hair and",
+    "expression. Do NOT change, beautify, stylize, or swap the face. The result",
+    "must be unmistakably the same person. Also keep their body shape and pose.",
+    "",
+    "Replace only their clothing. Make the garments drape naturally with",
+    "realistic fit, folds, lighting and shadows. Do not add text or watermarks.",
     body.notes ? `\nStyling notes from the user: ${body.notes}` : "",
   ].join("\n");
 }
@@ -103,6 +107,12 @@ async function runOpenAI(
   form.append("n", "1");
   form.append("size", size);
   form.append("quality", quality);
+  // Preserve fine detail from the input photo (notably the face) so the
+  // result actually looks like the person.
+  form.append(
+    "input_fidelity",
+    process.env.OPENAI_INPUT_FIDELITY || "high"
+  );
 
   const person = Buffer.from(body.model.data, "base64");
   form.append(
