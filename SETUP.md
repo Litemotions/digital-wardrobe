@@ -31,31 +31,38 @@ The MariaDB add-on listens on port **3306** of the Home Assistant host.
 
 ## 2. Run the API server
 
-Run this on the Home Assistant machine (or any always-on machine on the same
-network). It's in the [`server/`](./server) folder.
+### Option A — as a Home Assistant local add-on (recommended, no terminal)
+
+The [`server/`](./server) folder doubles as a HA add-on (it contains a
+`config.yaml`). Home Assistant builds and runs it for you, and it reaches your
+MariaDB add-on directly over HA's internal network (`core-mariadb`).
+
+1. Get the `server/` folder onto your HA machine's `/addons/` directory, in a
+   folder named `wardrobe_api`, i.e. `/addons/wardrobe_api/` (use the **Samba**
+   or **Studio Code Server / File editor** add-on to copy the files there).
+2. **Settings → Add-ons → Add-on Store → ⋮ (top right) → Check for updates**,
+   then look for **Local add-ons → Digital Wardrobe API** and click **Install**.
+3. Open the add-on's **Configuration** tab and set:
+   - `db_host: core-mariadb`
+   - `db_name: wardrobe`, `db_user: wardrobe`, `db_password:` *(the one you set)*
+   - `jwt_secret:` a long random string (any ~40+ random characters)
+   - `allowed_origins: https://digital-wardrobe-sable.vercel.app`
+4. **Start** the add-on, then check the **Log** tab — you should see
+   `Digital Wardrobe API listening on :8080`.
+
+The API is now reachable at `http://<your-home-assistant-ip>:8080`.
+
+### Option B — Docker (non-HA-OS machines)
 
 ```bash
 cd server
-cp .env.example .env
-# edit .env:
-#   DB_HOST=host.docker.internal   (or the HA host's LAN IP)
-#   DB_NAME=wardrobe
-#   DB_USER=wardrobe
-#   DB_PASSWORD=...the password you set above...
-#   JWT_SECRET=...run: openssl rand -hex 32...
-#   ALLOWED_ORIGINS=https://digital-wardrobe-sable.vercel.app
+cp .env.example .env   # fill DB_*, JWT_SECRET, ALLOWED_ORIGINS
 docker compose up -d --build
-```
-
-Check it's healthy:
-
-```bash
 curl http://localhost:8080/health      # -> {"ok":true}
 ```
 
-> **DB_HOST tip:** if the container runs on the same host as MariaDB, use
-> `host.docker.internal` (already wired up in `docker-compose.yml`). If it runs
-> on a different machine, use the Home Assistant host's LAN IP.
+> **DB_HOST tip:** on the same host as MariaDB use `host.docker.internal`
+> (wired up in `docker-compose.yml`); otherwise the DB machine's LAN IP.
 
 ## 3. Expose the API over HTTPS with a Cloudflare Tunnel
 

@@ -1,3 +1,4 @@
+import "./haOptions.js"; // must run first: maps HA add-on options -> env
 import express from "express";
 import cors from "cors";
 import { randomUUID } from "node:crypto";
