@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { type ModelPhoto } from "../types";
-import { deleteModel, putModel, uid } from "../db";
+import { deleteModel, putModel, uid } from "../store";
 import { processUpload } from "../lib/image";
 import { cutOutBackground } from "../lib/bg";
 import { Thumb } from "./Thumb";

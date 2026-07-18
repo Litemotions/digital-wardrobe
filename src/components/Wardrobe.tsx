@@ -6,7 +6,7 @@ import {
   type Category,
   type ClothingItem,
 } from "../types";
-import { deleteItem, putItem, uid } from "../db";
+import { deleteItem, putItem, uid } from "../store";
 import { processUpload } from "../lib/image";
 import { Thumb } from "./Thumb";
 import { UploadButton } from "./UploadButton";

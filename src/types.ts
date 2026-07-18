@@ -23,19 +23,22 @@ export function categoryEmoji(id: Category): string {
   return CATEGORIES.find((c) => c.id === id)?.emoji ?? "🧺";
 }
 
+// Images are a Blob in local (on-device) mode, or a URL string in cloud mode.
+export type ImageSrc = Blob | string;
+
 export interface ClothingItem {
   id: string;
   name: string;
   category: Category;
   color?: string;
-  image: Blob;
+  image: ImageSrc;
   createdAt: number;
 }
 
 export interface ModelPhoto {
   id: string;
   name: string;
-  image: Blob;
+  image: ImageSrc;
   createdAt: number;
 }
 
@@ -44,6 +47,6 @@ export interface Look {
   name: string;
   modelId: string;
   itemIds: string[];
-  result: Blob;
+  result: ImageSrc;
   createdAt: number;
 }

@@ -6,7 +6,7 @@ import {
   type ClothingItem,
   type ModelPhoto,
 } from "../types";
-import { putLook, uid } from "../db";
+import { putLook, uid } from "../store";
 import { generateTryOn, TryOnError } from "../lib/tryon";
 import { Thumb } from "./Thumb";
 import { useObjectUrl } from "../lib/useObjectUrl";

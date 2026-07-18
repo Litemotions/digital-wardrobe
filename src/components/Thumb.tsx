@@ -1,11 +1,12 @@
 import { useObjectUrl } from "../lib/useObjectUrl";
+import type { ImageSrc } from "../types";
 
 export function Thumb({
   blob,
   alt,
   className = "thumb",
 }: {
-  blob: Blob;
+  blob: ImageSrc;
   alt: string;
   className?: string;
 }) {

@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ClothingItem, Look, ModelPhoto } from "./types";
-import { getItems, getLooks, getModels } from "./db";
+import { getItems, getLooks, getModels } from "./store";
+import {
+  cloudEnabled,
+  clearToken,
+  getToken,
+  me,
+  type User,
+} from "./lib/api";
 import { Wardrobe } from "./components/Wardrobe";
 import { MePhoto } from "./components/MePhoto";
 import { StyleStudio } from "./components/StyleStudio";
 import { Lookbook } from "./components/Lookbook";
+import { Auth } from "./components/Auth";
 
 type Tab = "wardrobe" | "me" | "studio" | "looks";
 
@@ -22,21 +30,64 @@ export function App() {
     null
   );
 
+  // Auth: in local (no-server) mode we're always "in". In cloud mode we start
+  // "checking" and validate any saved token.
+  const [authState, setAuthState] = useState<"checking" | "in" | "out">(
+    cloudEnabled() ? "checking" : "in"
+  );
+  const [user, setUser] = useState<User | null>(null);
+
   const reloadItems = useCallback(() => {
-    getItems().then(setItems);
+    getItems().then(setItems).catch(() => {});
   }, []);
   const reloadModels = useCallback(() => {
-    getModels().then(setModels);
+    getModels().then(setModels).catch(() => {});
   }, []);
   const reloadLooks = useCallback(() => {
-    getLooks().then(setLooks);
+    getLooks().then(setLooks).catch(() => {});
   }, []);
 
-  useEffect(() => {
+  const reloadAll = useCallback(() => {
     reloadItems();
     reloadModels();
     reloadLooks();
   }, [reloadItems, reloadModels, reloadLooks]);
+
+  // Validate a saved session on first load (cloud mode only).
+  useEffect(() => {
+    if (!cloudEnabled()) return;
+    if (!getToken()) {
+      setAuthState("out");
+      return;
+    }
+    me()
+      .then((u) => {
+        setUser(u);
+        setAuthState("in");
+      })
+      .catch(() => {
+        clearToken();
+        setAuthState("out");
+      });
+  }, []);
+
+  // Load data whenever we're signed in.
+  useEffect(() => {
+    if (authState === "in") reloadAll();
+  }, [authState, reloadAll]);
+
+  function onAuthed(u: User) {
+    setUser(u);
+    setAuthState("in");
+  }
+  function signOut() {
+    clearToken();
+    setUser(null);
+    setItems([]);
+    setModels([]);
+    setLooks([]);
+    setAuthState("out");
+  }
 
   // Keep the active model valid and persisted.
   useEffect(() => {
@@ -63,14 +114,40 @@ export function App() {
     );
   }, []);
 
+  // Cloud mode gates: session check, then sign-in.
+  if (authState === "checking") {
+    return (
+      <div className="app">
+        <div className="stage" style={{ marginTop: "40vh", border: "none" }}>
+          <div className="loading">
+            <div className="spinner" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (authState === "out") {
+    return <Auth onAuthed={onAuthed} />;
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <span className="logo">👗</span>
-        <div>
+        <div style={{ flex: 1 }}>
           <h1>Digital Wardrobe</h1>
           <div className="sub">Mix, match & try it on — you</div>
         </div>
+        {user && (
+          <button
+            className="btn ghost"
+            style={{ padding: "6px 10px", fontSize: 12 }}
+            title={user.email}
+            onClick={signOut}
+          >
+            Sign out
+          </button>
+        )}
       </header>
 
       {tab === "wardrobe" && <Wardrobe items={items} reload={reloadItems} />}

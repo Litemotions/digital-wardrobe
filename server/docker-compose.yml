@@ -1,0 +1,14 @@
+services:
+  wardrobe-api:
+    build: .
+    container_name: wardrobe-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    # Lets DB_HOST=host.docker.internal reach a MariaDB running on the host
+    # (e.g. the Home Assistant machine). If your MariaDB has its own hostname
+    # or IP on the network, set DB_HOST to that in .env instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,17 +1,25 @@
 import { useEffect, useState } from "react";
+import type { ImageSrc } from "../types";
 
-// Turn a Blob into an object URL that is revoked when the blob changes or the
-// component unmounts, so we don't leak memory as the wardrobe grows.
-export function useObjectUrl(blob: Blob | null | undefined): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+// Turn an image source into a URL usable in <img src>. A Blob becomes an object
+// URL that is revoked on change/unmount; a string (already a URL) is passed
+// through as-is.
+export function useObjectUrl(src: ImageSrc | null | undefined): string | null {
+  const [url, setUrl] = useState<string | null>(
+    typeof src === "string" ? src : null
+  );
   useEffect(() => {
-    if (!blob) {
+    if (!src) {
       setUrl(null);
       return;
     }
-    const next = URL.createObjectURL(blob);
+    if (typeof src === "string") {
+      setUrl(src);
+      return;
+    }
+    const next = URL.createObjectURL(src);
     setUrl(next);
     return () => URL.revokeObjectURL(next);
-  }, [blob]);
+  }, [src]);
   return url;
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { type Look } from "../types";
-import { deleteLook } from "../db";
+import { deleteLook } from "../store";
 import { Thumb } from "./Thumb";
 import { useObjectUrl } from "../lib/useObjectUrl";
 

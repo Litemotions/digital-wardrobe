@@ -1,6 +1,13 @@
-import type { ClothingItem, ModelPhoto } from "../types";
+import type { ClothingItem, ImageSrc, ModelPhoto } from "../types";
 import { blobToBase64, base64ToBlob } from "./image";
 import { categoryLabel } from "../types";
+
+// Images may be a Blob (local mode) or a URL string (cloud mode). Normalise to
+// { mime, base64 } for the API request.
+async function toInline(src: ImageSrc): Promise<{ mime: string; data: string }> {
+  const blob = typeof src === "string" ? await (await fetch(src)).blob() : src;
+  return { mime: blob.type || "image/jpeg", data: await blobToBase64(blob) };
+}
 
 export interface TryOnResult {
   image: Blob;
@@ -18,14 +25,13 @@ export async function generateTryOn(
   items: ClothingItem[],
   notes?: string
 ): Promise<TryOnResult> {
-  const modelData = await blobToBase64(model.image);
+  const modelInline = await toInline(model.image);
   const garments = await Promise.all(
     items.map(async (it) => ({
       label: `${categoryLabel(it.category)}${it.name ? ` — ${it.name}` : ""}${
         it.color ? ` (${it.color})` : ""
       }`,
-      mime: it.image.type || "image/jpeg",
-      data: await blobToBase64(it.image),
+      ...(await toInline(it.image)),
     }))
   );
 
@@ -35,7 +41,7 @@ export async function generateTryOn(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: { mime: model.image.type || "image/jpeg", data: modelData },
+        model: modelInline,
         garments,
         notes,
       }),

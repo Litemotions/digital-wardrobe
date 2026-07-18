@@ -67,6 +67,17 @@ Deploy to [Vercel](https://vercel.com):
 
 See `.env.example` for optional overrides (model, quality, size, provider).
 
+## Accounts & cloud sync (optional)
+
+By default the app is account-free and stores everything on your device. You can
+optionally connect it to your **own MariaDB** (e.g. on Home Assistant) so you can
+sign in and sync your wardrobe, photos and looks across devices. A small API
+server runs next to your database and is exposed over HTTPS via a Cloudflare
+Tunnel — the database is never exposed directly.
+
+See **[SETUP.md](./SETUP.md)** for the full walkthrough (database, API server,
+tunnel, and the `VITE_API_BASE` env var). The server lives in [`server/`](./server).
+
 ## Tips for good try-on results
 
 - Use a clear, well-lit, **full-body** photo, standing straight, plain
