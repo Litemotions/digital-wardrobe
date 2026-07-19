@@ -1,0 +1,38 @@
+# Home Assistant local add-on for the Wardrobe app.
+# Copy the entire repo folder to /addons/wardrobe/ on your HA host.
+name: "Wardrobe"
+version: "0.2.0"
+slug: "wardrobe"
+description: "AI-powered wardrobe: import clothes, mix & match, generate looks — on wardrobe.lightmotions.dk."
+url: "https://github.com/Litemotions/digital-wardrobe"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+# Persistent data lives in /data (Home Assistant's per-add-on volume).
+map:
+  - "share:rw"
+ports:
+  "4173/tcp": 4173
+ports_description:
+  "4173/tcp": "Wardrobe (point your Cloudflare Tunnel here)"
+options:
+  openai_api_key: ""
+  openai_vision_model: "gpt-5.4-mini"
+  openai_image_model: "gpt-image-2"
+  openai_image_quality: "high"
+  login_email: "jibril@litemotions.dk"
+  login_code: ""
+  auth_mode: "on"
+  allowed_hosts: "wardrobe.lightmotions.dk"
+schema:
+  openai_api_key: "str"
+  openai_vision_model: "str"
+  openai_image_model: "str"
+  openai_image_quality: "list(low|medium|high|auto)"
+  login_email: "str"
+  login_code: "str"
+  auth_mode: "list(on|off|cloudflare)"
+  allowed_hosts: "str"
