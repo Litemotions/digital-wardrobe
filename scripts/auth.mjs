@@ -44,15 +44,28 @@ function makeCookie(email, secret) {
   return `${payload}.${sign(payload, secret)}`;
 }
 
-async function readJsonBody(req) {
+async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  if (!chunks.length) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    return {};
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// Parse a login submission from either JSON (fetch caller) or a plain HTML
+// form POST. The stream can only be read once, so we buffer first and branch
+// on content-type second.
+function parseCredentials(rawBody, contentType = "") {
+  const raw = String(rawBody || "").trim();
+  if (!raw) return { email: "", code: "" };
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(raw);
+      return { email: parsed?.email || "", code: parsed?.code || "" };
+    } catch {
+      return { email: "", code: "" };
+    }
   }
+  const params = new URLSearchParams(raw);
+  return { email: params.get("email") || "", code: params.get("code") || "" };
 }
 
 const LOGIN_PAGE = (email = "", error = "") => `<!doctype html>
@@ -120,19 +133,13 @@ export function authMiddleware({ env = {}, exemptPrefixes = [] } = {}) {
     const url = req.url || "/";
 
     if (req.method === "POST" && url === "/auth/login") {
-      const body = await readJsonBody(req).catch(() => ({}));
-      // Fall back to url-encoded form posts (native <form> from the login page).
-      let submittedEmail = body.email;
-      let submittedCode = body.code;
-      if (!submittedEmail && req.headers["content-type"]?.includes("application/x-www-form-urlencoded")) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const params = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-        submittedEmail = params.get("email");
-        submittedCode = params.get("code");
-      }
-      const okEmail = (submittedEmail || "").trim().toLowerCase() === email;
-      const okCode = String(submittedCode || "") === code;
+      const raw = await readBody(req).catch(() => "");
+      const { email: submittedEmail, code: submittedCode } = parseCredentials(
+        raw,
+        req.headers["content-type"] || ""
+      );
+      const okEmail = String(submittedEmail).trim().toLowerCase() === email;
+      const okCode = String(submittedCode) === code;
       if (okEmail && okCode) {
         const cookie = makeCookie(email, secret);
         res.setHeader("Set-Cookie", [
