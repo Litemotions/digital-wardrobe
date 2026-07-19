@@ -551,7 +551,10 @@ export function wardrobeImportApi(options = {}) {
           await writeFile(path.join(dir, cropFile), croppedImage);
           const now = new Date().toISOString();
           const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
-          const job = { id, status: "active", metadata, stages: { crop: cropStage, garment: stageState(), modeled: stageState() }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
+          // Modeled stage stays "skipped" by default — auto-generation was the
+          // biggest token cost. Use the new Looks flow to compose an outfit on
+          // demand instead. Users can still opt in via /stages/modeled/regenerate.
+          const job = { id, status: "active", metadata, stages: { crop: cropStage, garment: stageState(), modeled: { ...stageState(), status: "skipped" } }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
           job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
           await saveJob(job); jobs.push(publicJob(job));
         }
@@ -633,12 +636,18 @@ export function wardrobeImportApi(options = {}) {
         job.stages[stageName].error = null;
         job.stages[stageName].updatedAt = new Date().toISOString();
         const startGarment = stageName === "crop" && decision === "approve" && job.stages.garment.status === "pending";
-        const startModeled = stageName === "garment" && decision === "approve" && job.stages.modeled.status === "pending";
+        // Auto-modeled preview removed to save tokens — approving the garment
+        // finishes the import. Modeled generation is now on-demand via the
+        // Looks flow (or manual /stages/modeled/regenerate).
+        const startModeled = false;
+        if (stageName === "garment" && decision === "approve") job.status = "complete";
         if (stageName === "modeled" && decision === "approve") job.status = "complete";
         await saveJob(job);
         if (decision === "approve" && stageName !== "crop") {
           try {
-            await persistImported(job, stageName === "modeled");
+            // Include the modeled image only if the user later opts in and
+            // approves it; garment-approval path skips modeled by design.
+            await persistImported(job, stageName === "modeled" && job.stages.modeled?.assetUrl);
           } catch (error) {
             job.stages[stageName].status = previousStatus;
             job.stages[stageName].decision = previousDecision;

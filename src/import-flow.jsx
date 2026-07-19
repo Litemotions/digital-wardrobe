@@ -38,7 +38,8 @@ function deriveStatus(job) {
   if (modeled?.status === "review") return { tone: "ready", text: "Modeled image ready for review" };
   if (modeled?.status === "processing") return { tone: "processing", text: "Styling modeled image" };
   if (garment?.status === "review") return { tone: "ready", text: "Ready for review" };
-  if (garment?.status === "approved") return { tone: "processing", text: "Creating modeled image" };
+  // Auto-modeled generation is off; approving the garment finishes the import.
+  if (garment?.status === "approved") return { tone: "complete", text: "Imported" };
   if (crop?.status === "review") return { tone: "ready", text: "Crop ready for review" };
   if (crop?.status === "approved") return { tone: "processing", text: "Creating garment image" };
   if (crop?.status === "rejected" || garment?.status === "rejected" || modeled?.status === "rejected") return { tone: "complete", text: "Import declined" };
@@ -167,7 +168,7 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
   }, []);
 
   useEffect(() => {
-    if (!jobs.some((job) => (job.stages?.crop?.status === "approved" && ["processing", "pending", "queued"].includes(job.stages?.garment?.status)) || ["processing", "queued"].includes(job.stages?.modeled?.status) || (job.stages?.garment?.status === "approved" && job.stages?.modeled?.status === "pending"))) return undefined;
+    if (!jobs.some((job) => (job.stages?.crop?.status === "approved" && ["processing", "pending", "queued"].includes(job.stages?.garment?.status)) || ["processing", "queued"].includes(job.stages?.modeled?.status))) return undefined;
     const timer = setInterval(() => jobs.forEach((job) => refresh(job.id)), 900);
     return () => clearInterval(timer);
   }, [jobs, refresh]);
