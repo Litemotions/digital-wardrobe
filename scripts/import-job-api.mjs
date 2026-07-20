@@ -497,6 +497,19 @@ export function wardrobeImportApi(options = {}) {
       if (url.pathname === "/api/import/config" && req.method === "GET") {
         return json(res, 200, await setupStatus());
       }
+      // Let the user upload their model-reference photo from the browser
+      // instead of having to place a file on disk. Writes to WARDROBE_MODEL_REFERENCE.
+      if (url.pathname === "/api/import/setup/model-reference" && req.method === "POST") {
+        const input = await body(req);
+        const image = decodeImage(input);
+        const referenceSetting = setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
+        const referencePath = path.resolve(root, referenceSetting);
+        await mkdir(path.dirname(referencePath), { recursive: true });
+        // Normalise to PNG so downstream code that expects a PNG always finds one.
+        const png = await sharp(image.data).png().toBuffer();
+        await writeFile(referencePath, png);
+        return json(res, 200, await setupStatus());
+      }
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
         const id = wardrobeDeleteMatch[1];

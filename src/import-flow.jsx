@@ -4,6 +4,7 @@ import "./import-flow.css";
 
 const API = "/api/import/jobs";
 const CONFIG_API = "/api/import/config";
+const MODEL_REFERENCE_API = "/api/import/setup/model-reference";
 const PARTS = [
   ["upperbody", "Tops"],
   ["wholebody_up", "Jackets"],
@@ -130,6 +131,56 @@ function CleanupEditor({ job, tolerance, setTolerance, busy, onPreview, onAccept
         <button className="import-button" disabled={busy} onClick={() => onPreview(tolerance)}><ArrowCounterClockwise size={14} /> Preview cleanup</button>
         <button className="import-button import-button--primary" disabled={busy} onClick={onAccept}><Check size={14} weight="bold" /> Use this cleanup</button>
       </div>
+    </div>
+  );
+}
+
+// Shown when the server reports the app isn't ready to import. If only the
+// model-reference photo is missing (and the OpenAI key is set), surface an
+// inline "Upload photo" button that posts the PNG to the server so the user
+// doesn't have to touch the filesystem at all.
+function SetupCard({ setup, onUpdated }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const uploadRef = useRef(null);
+  const needsKey = !setup?.hasApiKey;
+  const needsPhoto = !setup?.hasModelReference;
+  const canUploadPhoto = !needsKey && needsPhoto;
+  const onPick = async (file) => {
+    if (!file || !file.type?.startsWith("image/")) {
+      setError("Pick a PNG or JPEG photo of yourself."); return;
+    }
+    setBusy(true); setError("");
+    try {
+      const imageDataUrl = await fileToDataUrl(file);
+      const next = await api(MODEL_REFERENCE_API, { method: "POST", body: JSON.stringify({ imageDataUrl }) });
+      onUpdated?.(next);
+    } catch (requestError) {
+      setError(requestError.message || "Upload failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="import-drop-target import-setup-warning">
+      <WarningCircle size={30} />
+      <h2>Setup required</h2>
+      {needsKey && needsPhoto ? (
+        <p>Add your OpenAI API key to the add-on's Configuration tab and upload a PNG reference photo of yourself. After adding the key, restart the add-on.</p>
+      ) : needsKey ? (
+        <p>Add your OpenAI API key to the add-on's Configuration tab, then restart the add-on.</p>
+      ) : (
+        <p>Almost there — upload a clear, well-lit reference photo of yourself. It's used when we compose outfit previews on you.</p>
+      )}
+      {canUploadPhoto && (
+        <>
+          <input ref={uploadRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onPick(file); }} />
+          <button className="import-button import-button--primary" disabled={busy} onClick={() => uploadRef.current?.click()}>
+            {busy ? "Uploading…" : "Upload reference photo"}
+          </button>
+        </>
+      )}
+      {error && <p className="import-status is-error" role="alert">{error}</p>}
     </div>
   );
 }
@@ -279,7 +330,7 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
       <div className="import-popover-backdrop" data-open={open} onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
         <section className="import-popover" role="dialog" aria-modal="true" aria-labelledby="import-title">
           <header className="import-popover__header"><div><p className="import-popover__eyebrow">Wardrobe import</p><h2 className="import-popover__title" id="import-title">{readyCount ? `${readyCount} ready for review` : activeStatus?.tone === "error" ? "Import needs attention" : jobs.length ? "Preparing new pieces" : notice?.text || "Add to your wardrobe"}</h2></div><button className="import-icon-button" type="button" onClick={() => setOpen(false)} aria-label="Close import progress"><X size={20} /></button></header>
-          {!jobs.length ? setupRequired ? <div className="import-drop-target import-setup-warning"><WarningCircle size={30} /><h2>Setup required</h2><p>Add your OpenAI API key to <code>.env</code> and a PNG reference photo of yourself at <code>{setup.modelReference || "data/model-reference.png"}</code>, then restart the app.</p></div> : <div className="import-drop-target"><UploadSimple size={28} /><h2>{notice ? "Try another image" : "Choose or paste an image"}</h2><p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p><button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); inputRef.current?.click(); }}>Choose images</button></div> : (
+          {!jobs.length ? setupRequired ? <SetupCard setup={setup} onUpdated={setSetup} /> : <div className="import-drop-target"><UploadSimple size={28} /><h2>{notice ? "Try another image" : "Choose or paste an image"}</h2><p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p><button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); inputRef.current?.click(); }}>Choose images</button></div> : (
             <>
               <div className={`import-progress${activeStatus?.tone !== "processing" ? " is-reviewing" : progress < 100 ? " is-indeterminate" : ""}`}><div className="import-progress__meta"><span>{activeStatus?.text}</span><span>{jobs.length} {jobs.length === 1 ? "item" : "items"}</span></div>{activeStatus?.tone === "processing" && <div className="import-progress__track"><div className="import-progress__bar" style={{ "--import-progress": `${progress}%` }} /></div>}</div>
               {reviewJob && reviewStage ? <ReviewEditor job={reviewJob} stage={reviewStage} draft={drafts[reviewJob.id] || defaultDraft(reviewJob)} setDraft={(draft) => setDrafts((current) => ({ ...current, [reviewJob.id]: draft }))} regenPrompt={regenerationPrompts[`${reviewJob.id}:${reviewStage}`] || ""} setRegenPrompt={(prompt) => setRegenerationPrompts((current) => ({ ...current, [`${reviewJob.id}:${reviewStage}`]: prompt }))} busy={busyId === reviewJob.id} onAction={(action, prompt) => perform(reviewJob, reviewStage, action, prompt)} /> : reviewJob && hasCleanupFailure(reviewJob) ? <CleanupEditor job={reviewJob} tolerance={cleanupTolerances[reviewJob.id] ?? reviewJob.stages.garment.cleanupTolerance ?? 46} setTolerance={(tolerance) => setCleanupTolerances((current) => ({ ...current, [reviewJob.id]: tolerance }))} busy={busyId === reviewJob.id} onPreview={(tolerance) => performCleanup(reviewJob, "preview", tolerance)} onAccept={() => performCleanup(reviewJob, "accept")} /> : null}
