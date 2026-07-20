@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import sharp from "sharp";
+import unzipper from "unzipper";
 
 const API_ROOT = "/api/import/jobs";
 const ASSET_ROOT = "/api/import/assets";
@@ -499,6 +502,69 @@ export function wardrobeImportApi(options = {}) {
       }
       // Let the user upload their model-reference photo from the browser
       // instead of having to place a file on disk. Writes to WARDROBE_MODEL_REFERENCE.
+      // Restore a wardrobe backup: streams a .zip of a `data/` folder
+      // (library.json + imported/*.png + optional model-reference.png) and
+      // merges it into this install. Existing items with the same id are
+      // overwritten, so re-importing the same backup is safe and idempotent.
+      if (url.pathname === "/api/import/restore" && req.method === "POST") {
+        let libraryFromZip = null;
+        let imageCount = 0;
+        let modelReferenceRestored = false;
+        try {
+          await pipeline(req, unzipper.Parse().on("entry", async (entry) => {
+            const fullPath = entry.path.replace(/\\/g, "/");
+            const base = path.basename(fullPath);
+            const isImportedImage = /(^|\/)imported\/[^/]+\.png$/i.test(fullPath);
+            try {
+              if (base === "library.json" && entry.type === "File") {
+                const chunks = [];
+                for await (const chunk of entry) chunks.push(chunk);
+                try {
+                  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                  if (Array.isArray(parsed)) libraryFromZip = parsed;
+                } catch { /* keep going, log below */ }
+              } else if (isImportedImage) {
+                const out = path.join(libraryAssetDir, base);
+                await mkdir(libraryAssetDir, { recursive: true });
+                await pipeline(entry, createWriteStream(out));
+                imageCount += 1;
+              } else if (base === "model-reference.png") {
+                const referencePath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+                await mkdir(path.dirname(referencePath), { recursive: true });
+                await pipeline(entry, createWriteStream(referencePath));
+                modelReferenceRestored = true;
+              } else {
+                entry.autodrain();
+              }
+            } catch (entryError) {
+              console.warn("Restore: failed on entry", fullPath, entryError.message);
+              entry.autodrain();
+            }
+          }));
+        } catch (zipError) {
+          return json(res, 400, { error: `Could not read the ZIP: ${zipError.message}` });
+        }
+
+        // Merge the library. Later duplicates overwrite earlier ones by id.
+        let mergedCount = 0;
+        if (Array.isArray(libraryFromZip)) {
+          const existing = await loadImported();
+          const byId = new Map(existing.map((item) => [item.id, item]));
+          for (const item of libraryFromZip) {
+            if (item && typeof item.id === "string") {
+              byId.set(item.id, item);
+              mergedCount += 1;
+            }
+          }
+          await atomicJson(importedFile, Array.from(byId.values()));
+        }
+
+        return json(res, 200, {
+          items: mergedCount,
+          images: imageCount,
+          modelReferenceRestored,
+        });
+      }
       if (url.pathname === "/api/import/setup/model-reference" && req.method === "POST") {
         const input = await body(req);
         const image = decodeImage(input);

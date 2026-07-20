@@ -5,6 +5,7 @@ import "./import-flow.css";
 const API = "/api/import/jobs";
 const CONFIG_API = "/api/import/config";
 const MODEL_REFERENCE_API = "/api/import/setup/model-reference";
+const RESTORE_API = "/api/import/restore";
 const PARTS = [
   ["upperbody", "Tops"],
   ["wholebody_up", "Jackets"],
@@ -135,6 +136,45 @@ function CleanupEditor({ job, tolerance, setTolerance, busy, onPreview, onAccept
   );
 }
 
+// Upload a ZIP (a `data/` folder from a local wardrobe) via XHR so we can
+// show real upload progress. The server extracts library.json + imported PNGs
+// + optional model-reference.png and merges them into this install.
+function RestoreButton({ label = "Restore from ZIP", disabled, onSuccess }) {
+  const fileRef = useRef(null);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState("");
+  const onFile = (file) => {
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) { setError("Pick a .zip file."); return; }
+    setError(""); setProgress(0);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", RESTORE_API);
+    xhr.setRequestHeader("Content-Type", "application/zip");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) setProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onerror = () => { setError("Upload failed. Check your connection and try again."); setProgress(null); };
+    xhr.onload = () => {
+      setProgress(null);
+      let payload = {};
+      try { payload = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300) onSuccess?.(payload);
+      else setError(payload.error || `Restore failed (HTTP ${xhr.status}).`);
+    };
+    xhr.send(file);
+  };
+  const busy = progress !== null;
+  return (
+    <>
+      <input ref={fileRef} type="file" accept=".zip,application/zip" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; onFile(file); }} />
+      <button className="import-button" disabled={disabled || busy} onClick={() => fileRef.current?.click()}>
+        {busy ? `Uploading… ${progress}%` : label}
+      </button>
+      {error && <p className="import-status is-error" role="alert">{error}</p>}
+    </>
+  );
+}
+
 // Shown when the server reports the app isn't ready to import. If only the
 // model-reference photo is missing (and the OpenAI key is set), surface an
 // inline "Upload photo" button that posts the PNG to the server so the user
@@ -178,6 +218,15 @@ function SetupCard({ setup, onUpdated }) {
           <button className="import-button import-button--primary" disabled={busy} onClick={() => uploadRef.current?.click()}>
             {busy ? "Uploading…" : "Upload reference photo"}
           </button>
+        </>
+      )}
+      {!needsKey && (
+        <>
+          <p style={{ marginTop: 16, fontSize: 12, opacity: 0.75 }}>Or restore from a backup (a .zip of a wardrobe <code>data/</code> folder):</p>
+          <RestoreButton disabled={busy} onSuccess={(result) => {
+            alert(`Restored ${result.items || 0} item${result.items === 1 ? "" : "s"} and ${result.images || 0} image${result.images === 1 ? "" : "s"}${result.modelReferenceRestored ? " (including your model reference)" : ""}.`);
+            window.location.reload();
+          }} />
         </>
       )}
       {error && <p className="import-status is-error" role="alert">{error}</p>}
@@ -330,7 +379,7 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
       <div className="import-popover-backdrop" data-open={open} onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
         <section className="import-popover" role="dialog" aria-modal="true" aria-labelledby="import-title">
           <header className="import-popover__header"><div><p className="import-popover__eyebrow">Wardrobe import</p><h2 className="import-popover__title" id="import-title">{readyCount ? `${readyCount} ready for review` : activeStatus?.tone === "error" ? "Import needs attention" : jobs.length ? "Preparing new pieces" : notice?.text || "Add to your wardrobe"}</h2></div><button className="import-icon-button" type="button" onClick={() => setOpen(false)} aria-label="Close import progress"><X size={20} /></button></header>
-          {!jobs.length ? setupRequired ? <SetupCard setup={setup} onUpdated={setSetup} /> : <div className="import-drop-target"><UploadSimple size={28} /><h2>{notice ? "Try another image" : "Choose or paste an image"}</h2><p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p><button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); inputRef.current?.click(); }}>Choose images</button></div> : (
+          {!jobs.length ? setupRequired ? <SetupCard setup={setup} onUpdated={setSetup} /> : <div className="import-drop-target"><UploadSimple size={28} /><h2>{notice ? "Try another image" : "Choose or paste an image"}</h2><p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p><button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); inputRef.current?.click(); }}>Choose images</button><div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>or <RestoreButton label="restore from a ZIP backup" onSuccess={(result) => { alert(`Restored ${result.items || 0} items and ${result.images || 0} images.`); window.location.reload(); }} /></div></div> : (
             <>
               <div className={`import-progress${activeStatus?.tone !== "processing" ? " is-reviewing" : progress < 100 ? " is-indeterminate" : ""}`}><div className="import-progress__meta"><span>{activeStatus?.text}</span><span>{jobs.length} {jobs.length === 1 ? "item" : "items"}</span></div>{activeStatus?.tone === "processing" && <div className="import-progress__track"><div className="import-progress__bar" style={{ "--import-progress": `${progress}%` }} /></div>}</div>
               {reviewJob && reviewStage ? <ReviewEditor job={reviewJob} stage={reviewStage} draft={drafts[reviewJob.id] || defaultDraft(reviewJob)} setDraft={(draft) => setDrafts((current) => ({ ...current, [reviewJob.id]: draft }))} regenPrompt={regenerationPrompts[`${reviewJob.id}:${reviewStage}`] || ""} setRegenPrompt={(prompt) => setRegenerationPrompts((current) => ({ ...current, [`${reviewJob.id}:${reviewStage}`]: prompt }))} busy={busyId === reviewJob.id} onAction={(action, prompt) => perform(reviewJob, reviewStage, action, prompt)} /> : reviewJob && hasCleanupFailure(reviewJob) ? <CleanupEditor job={reviewJob} tolerance={cleanupTolerances[reviewJob.id] ?? reviewJob.stages.garment.cleanupTolerance ?? 46} setTolerance={(tolerance) => setCleanupTolerances((current) => ({ ...current, [reviewJob.id]: tolerance }))} busy={busyId === reviewJob.id} onPreview={(tolerance) => performCleanup(reviewJob, "preview", tolerance)} onAccept={() => performCleanup(reviewJob, "accept")} /> : null}
