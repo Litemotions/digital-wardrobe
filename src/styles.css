@@ -967,6 +967,23 @@ button { font: inherit; }
 
 .select-toggle:hover { background: rgba(25, 25, 25, .07); }
 
+.selection-error {
+  position: fixed;
+  left: 50%;
+  bottom: 74px;
+  transform: translateX(-50%);
+  z-index: 71;
+  max-width: min(480px, calc(100vw - 48px));
+  margin: 0;
+  padding: 10px 16px;
+  color: var(--paper);
+  background: var(--accent);
+  border-radius: 12px;
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 12px 36px rgba(25, 23, 18, .26);
+}
+
 .selection-bar {
   position: fixed;
   left: 50%;

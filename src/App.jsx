@@ -543,15 +543,18 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
 
 // Floating bar shown while picking items for a look. Sits bottom-center so it
 // never overlaps the import tray (bottom-left).
-function SelectionBar({ count, max, busy, onClear, onGenerate }) {
+function SelectionBar({ count, max, busy, error, onClear, onGenerate }) {
   return (
-    <div className="selection-bar" role="status">
-      <span>{count} of {max} selected</span>
-      <button type="button" className="clear-btn" onClick={onClear}>Cancel</button>
-      <button type="button" className="generate-btn" disabled={!count || busy} onClick={onGenerate}>
-        {busy ? "Generating…" : <><Sparkle size={15} weight="fill" /> Generate look</>}
-      </button>
-    </div>
+    <>
+      {error && <p className="selection-error" role="alert">{error}</p>}
+      <div className="selection-bar" role="status">
+        <span>{count} of {max} selected</span>
+        <button type="button" className="clear-btn" onClick={onClear}>Cancel</button>
+        <button type="button" className="generate-btn" disabled={!count || busy} onClick={onGenerate}>
+          {busy ? "Generating…" : <><Sparkle size={15} weight="fill" /> Generate look</>}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -860,6 +863,7 @@ export function App() {
           count={selectedIds.size}
           max={MAX_LOOK_ITEMS}
           busy={lookBusy}
+          error={!lookDraft ? lookError : ""}
           onClear={cancelSelecting}
           onGenerate={requestLook}
         />
