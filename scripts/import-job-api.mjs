@@ -611,6 +611,7 @@ export function wardrobeImportApi(options = {}) {
       if (url.pathname === `${LOOKS_ROOT}/generate` && req.method === "POST") {
         const setup = await setupStatus();
         if (!setup.ready) {
+          console.warn("[looks/generate] setup not ready:", setup);
           return json(res, 503, { error: "Setup required: add your OpenAI API key and a model reference photo first." });
         }
         const input = await body(req);
@@ -620,7 +621,10 @@ export function wardrobeImportApi(options = {}) {
 
         const records = await loadImported();
         const selected = itemIds.map((id) => records.find((record) => record.id === id)).filter(Boolean);
-        if (selected.length !== itemIds.length) return json(res, 404, { error: "One or more selected items were not found." });
+        if (selected.length !== itemIds.length) {
+          console.warn("[looks/generate] items not found:", { requested: itemIds, matched: selected.map((r) => r.id) });
+          return json(res, 404, { error: "One or more selected items were not found." });
+        }
 
         const key = setting("OPENAI_API_KEY");
         const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
@@ -629,6 +633,7 @@ export function wardrobeImportApi(options = {}) {
           modelData = await readFile(modelPath);
         } catch (error) {
           if (error.code === "ENOENT") return json(res, 503, { error: `Model reference not found at ${modelPath}. Upload one from the wardrobe setup screen.` });
+          console.error("[looks/generate] failed reading model reference:", error);
           throw error;
         }
 
@@ -638,6 +643,7 @@ export function wardrobeImportApi(options = {}) {
           try {
             garmentImages.push({ data: await readFile(file), name: `${record.id}.png`, label: `${PART_LABELS[record.part] || "Item"} — ${record.name}${record.color ? ` (${record.color})` : ""}` });
           } catch (error) {
+            console.error(`[looks/generate] failed reading garment image for ${record.id} at ${file}:`, error);
             return json(res, 404, { error: `Could not read the image for "${record.name}".` });
           }
         }
@@ -656,19 +662,22 @@ export function wardrobeImportApi(options = {}) {
           "tasteful real-world setting. No text, watermark, product mockup, or synthetic appearance.",
         ].join("\n");
 
+        const lookModel = setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")));
+        const lookQuality = setting("OPENAI_IMAGE_QUALITY", "high");
         let bytes;
         try {
           bytes = await openAIEdit({
             key,
             baseUrl: apiBaseUrl(),
-            model: setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2"))),
-            quality: setting("OPENAI_IMAGE_QUALITY", "high"),
+            model: lookModel,
+            quality: lookQuality,
             size: "1024x1536",
             images: [{ data: modelData, mime: "image/png", name: "model.png" }, ...garmentImages],
             prompt,
           });
         } catch (error) {
-          return json(res, 502, { error: error.message || "Could not generate that look." });
+          console.error(`[looks/generate] OpenAI call failed (model=${lookModel}, quality=${lookQuality}, images=${garmentImages.length + 1}):`, error);
+          return json(res, 502, { error: error.message || "Could not generate that look. Check the add-on log for details." });
         }
 
         const id = randomUUID();
@@ -883,6 +892,7 @@ export function wardrobeImportApi(options = {}) {
       return json(res, 404, { error: "Not found" });
     } catch (error) {
       const statusCode = error.code === "ENOENT" ? 404 : error.status || 500;
+      if (statusCode === 500) console.error(`[import-api] unhandled error on ${req.method} ${url.pathname}:`, error);
       return json(res, statusCode, { error: statusCode === 500 ? "Internal server error" : error.message, ...(process.env.NODE_ENV === "development" && statusCode === 500 ? { detail: error.message } : {}) });
     }
   }
