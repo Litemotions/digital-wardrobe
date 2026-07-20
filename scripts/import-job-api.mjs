@@ -654,6 +654,7 @@ export function wardrobeImportApi(options = {}) {
           }
         }
 
+        const notes = typeof input.notes === "string" ? input.notes.trim().slice(0, 300) : "";
         const garmentList = garmentImages.map((image, index) => `Image ${index + 2}: ${image.label}`).join("\n");
         const prompt = [
           "Create a professional vertical 3:4 editorial fashion photograph of the person in Image 1",
@@ -662,10 +663,14 @@ export function wardrobeImportApi(options = {}) {
           "",
           "Preserve the person's recognizable identity, face, hair, age, and body proportions exactly.",
           "Preserve every garment's color, material, fit, construction, graphic, logo, and distinctive",
-          "detail exactly as shown. Layer and combine the pieces the way a real outfit is worn (correct",
-          "tucking, layering order, and proportions) with realistic drape, fit, and shadow. Keep every",
-          "garment clearly visible and unobstructed. Use natural light, authentic fabric texture, and a",
-          "tasteful real-world setting. No text, watermark, product mockup, or synthetic appearance.",
+          "detail exactly as shown, including sleeve length and how it fastens. Wear each garment plainly",
+          "and neutrally exactly as shown in its reference image — do NOT roll up or push up sleeves, do",
+          "NOT tuck in or untuck shirts, do NOT add layers, and do NOT change how any piece is worn, unless",
+          "explicitly instructed below. Do NOT add any accessories, jewelry, watches, hats, bags, belts, or",
+          "any other item that is not one of the garments shown. Use natural light, authentic fabric",
+          "texture, and a tasteful real-world setting. No text, watermark, product mockup, or synthetic",
+          "appearance.",
+          notes ? `\nAdditional styling instructions from the user (these override the defaults above): ${notes}` : "",
         ].join("\n");
 
         const lookModel = setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")));

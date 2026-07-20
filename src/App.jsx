@@ -543,10 +543,19 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
 
 // Floating bar shown while picking items for a look. Sits bottom-center so it
 // never overlaps the import tray (bottom-left).
-function SelectionBar({ count, max, busy, error, onClear, onGenerate }) {
+function SelectionBar({ count, max, busy, error, notes, setNotes, onClear, onGenerate }) {
   return (
     <>
       {error && <p className="selection-error" role="alert">{error}</p>}
+      <div className="selection-notes">
+        <input
+          type="text"
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Styling notes (optional) — e.g. tuck in the shirt, roll up sleeves"
+          disabled={busy}
+        />
+      </div>
       <div className="selection-bar" role="status">
         <span>{count} of {max} selected</span>
         <button type="button" className="clear-btn" onClick={onClear}>Cancel</button>
@@ -561,13 +570,30 @@ function SelectionBar({ count, max, busy, error, onClear, onGenerate }) {
 // Draft shown right after generation. Nothing is persisted until the user
 // hits Save — that's the point: tokens are spent once, on request, and the
 // result can still be discarded for free.
-function LookPreviewModal({ draft, itemNames, busy, error, onSave, onDiscard, onRegenerate }) {
+// Shows exactly which wardrobe pieces went into a look, as small thumbnail
+// chips rather than an easy-to-miss line of text.
+function LookItemsRow({ items }) {
+  if (!items.length) return null;
+  return (
+    <div className="look-items-row">
+      {items.map((item) => (
+        <div className="look-items-chip" key={item.id}>
+          <img src={item.thumbnail || item.image} alt="" />
+          <span>{item.name || "Item"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LookPreviewModal({ draft, items, busy, error, onSave, onDiscard, onRegenerate }) {
   const [name, setName] = useState("");
   return (
     <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onDiscard()}>
       <div className="look-modal" role="dialog" aria-modal="true" aria-label="Generated look preview">
         <img src={draft.image} alt="Generated look" />
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--muted)" }}>{itemNames.join(" · ")}</p>
+        <p className="look-items-label">Includes</p>
+        <LookItemsRow items={items} />
         <input
           type="text"
           placeholder="Name this look (optional)"
@@ -587,13 +613,14 @@ function LookPreviewModal({ draft, itemNames, busy, error, onSave, onDiscard, on
   );
 }
 
-function LookViewer({ look, itemNames, onClose, onDelete }) {
+function LookViewer({ look, items, onClose, onDelete }) {
   return (
     <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="look-modal" role="dialog" aria-modal="true" aria-label={look.name}>
         <img src={look.image} alt={look.name} />
-        <h2 style={{ margin: "0 0 6px", fontSize: 18 }}>{look.name}</h2>
-        <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--muted)" }}>{itemNames.join(" · ")}</p>
+        <h2 style={{ margin: "0 0 10px", fontSize: 18 }}>{look.name}</h2>
+        <p className="look-items-label">Includes</p>
+        <LookItemsRow items={items} />
         <div className="look-modal-actions">
           <button type="button" onClick={() => onDelete(look.id)}><Trash size={15} /> Delete</button>
           <button type="button" className="primary" onClick={onClose}>Close</button>
@@ -617,6 +644,7 @@ export function App() {
   const [lookDraft, setLookDraft] = useState(null);
   const [lookBusy, setLookBusy] = useState(false);
   const [lookError, setLookError] = useState("");
+  const [lookNotes, setLookNotes] = useState("");
   const [viewingLookId, setViewingLookId] = useState(null);
 
   useEffect(() => {
@@ -642,7 +670,8 @@ export function App() {
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
   const viewingLook = looks.find((look) => look.id === viewingLookId) || null;
-  const itemNameById = useMemo(() => Object.fromEntries(items.map((item) => [item.id, item.name || TYPE_MAP[item.part]?.singular || "Item"])), [items]);
+  const itemById = useMemo(() => Object.fromEntries(items.map((item) => [item.id, item])), [items]);
+  const itemsForIds = (ids) => ids.map((id) => itemById[id]).filter(Boolean);
 
   const visibleItems = useMemo(() => {
     const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
@@ -708,6 +737,7 @@ export function App() {
   const cancelSelecting = () => {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setLookNotes("");
     setLookError("");
   };
 
@@ -751,7 +781,7 @@ export function App() {
       const response = await fetch(LOOKS_GENERATE_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemIds: [...selectedIds] }),
+        body: JSON.stringify({ itemIds: [...selectedIds], notes: lookNotes }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not generate that look.");
@@ -807,20 +837,24 @@ export function App() {
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">
-              {viewTab === "wardrobe"
-                ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}`
-                : `${looks.length} ${looks.length === 1 ? "look" : "looks"}`}
-            </p>
-            <nav className="view-tabs" aria-label="Switch between wardrobe and looks">
-              <button type="button" className={viewTab === "wardrobe" ? "active" : ""} onClick={() => { setViewTab("wardrobe"); cancelSelecting(); }}>Wardrobe</button>
-              <button type="button" className={viewTab === "looks" ? "active" : ""} onClick={() => { setViewTab("looks"); cancelSelecting(); }}>Looks</button>
-            </nav>
-            {viewTab === "wardrobe" && !!items.length && (
-              selectMode
-                ? <button type="button" className="select-toggle" onClick={cancelSelecting}>Cancel</button>
-                : <button type="button" className="select-toggle" onClick={startSelecting}><Sparkle size={14} weight="fill" /> Create a look</button>
-            )}
+            <div className="gallery-meta-left">
+              <p className="piece-count">
+                {viewTab === "wardrobe"
+                  ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}`
+                  : `${looks.length} ${looks.length === 1 ? "look" : "looks"}`}
+              </p>
+              <nav className="view-tabs" aria-label="Switch between wardrobe and looks">
+                <button type="button" className={viewTab === "wardrobe" ? "active" : ""} onClick={() => { setViewTab("wardrobe"); cancelSelecting(); }}>Wardrobe</button>
+                <button type="button" className={viewTab === "looks" ? "active" : ""} onClick={() => { setViewTab("looks"); cancelSelecting(); }}>Looks</button>
+              </nav>
+            </div>
+            <div className="gallery-meta-right">
+              {viewTab === "wardrobe" && !!items.length && (
+                selectMode
+                  ? <button type="button" className="select-toggle" onClick={cancelSelecting}>Cancel</button>
+                  : <button type="button" className="select-toggle" onClick={startSelecting}><Sparkle size={14} weight="fill" /> Create a look</button>
+              )}
+            </div>
           </div>
           {viewTab === "wardrobe" && (
             <nav className="category-nav" aria-label="Filter wardrobe by item type">
@@ -884,6 +918,8 @@ export function App() {
           max={MAX_LOOK_ITEMS}
           busy={lookBusy}
           error={!lookDraft ? lookError : ""}
+          notes={lookNotes}
+          setNotes={setLookNotes}
           onClear={cancelSelecting}
           onGenerate={requestLook}
         />
@@ -892,7 +928,7 @@ export function App() {
       {lookDraft && (
         <LookPreviewModal
           draft={lookDraft}
-          itemNames={lookDraft.itemIds.map((id) => itemNameById[id] || "Item")}
+          items={itemsForIds(lookDraft.itemIds)}
           busy={lookBusy}
           error={lookError}
           onSave={saveLookDraft}
@@ -904,7 +940,7 @@ export function App() {
       {viewingLook && (
         <LookViewer
           look={viewingLook}
-          itemNames={viewingLook.itemIds.map((id) => itemNameById[id] || "Item")}
+          items={itemsForIds(viewingLook.itemIds)}
           onClose={() => setViewingLookId(null)}
           onDelete={deleteLook}
         />

@@ -48,6 +48,21 @@ button { font: inherit; }
   gap: 24px;
 }
 
+/* Two fixed groups (not variable children) so the tabs never shift when the
+   right-hand button is conditionally absent (e.g. on the Looks tab). */
+.gallery-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gallery-meta-right {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+}
+
 .piece-count {
   margin: 0;
   font-size: 13px;
@@ -954,7 +969,6 @@ button { font: inherit; }
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
   padding: 8px 14px;
   border: 1px solid var(--line);
   background: transparent;
@@ -970,7 +984,7 @@ button { font: inherit; }
 .selection-error {
   position: fixed;
   left: 50%;
-  bottom: 74px;
+  bottom: 132px;
   transform: translateX(-50%);
   z-index: 71;
   max-width: min(480px, calc(100vw - 48px));
@@ -983,6 +997,31 @@ button { font: inherit; }
   text-align: center;
   box-shadow: 0 12px 36px rgba(25, 23, 18, .26);
 }
+
+.selection-notes {
+  position: fixed;
+  left: 50%;
+  bottom: 74px;
+  transform: translateX(-50%);
+  z-index: 71;
+  width: min(380px, calc(100vw - 48px));
+}
+
+.selection-notes input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 16px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  box-shadow: 0 12px 36px rgba(25, 23, 18, .18);
+}
+
+.selection-notes input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.selection-notes input:disabled { opacity: .6; }
 
 .selection-bar {
   position: fixed;
@@ -1041,6 +1080,43 @@ button { font: inherit; }
 }
 
 .look-modal img { width: 100%; border-radius: 12px; margin-bottom: 16px; background: var(--line); aspect-ratio: 2 / 3; object-fit: cover; }
+
+.look-items-label {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.look-items-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.look-items-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 5px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.look-items-chip img {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 50%;
+  background: var(--line);
+  margin: 0;
+}
 
 .look-modal input[type="text"] {
   width: 100%;
@@ -1109,5 +1185,4 @@ button { font: inherit; }
 
 @media (max-width: 640px) {
   .gallery-meta-row { flex-wrap: wrap; }
-  .select-toggle { margin-left: 0; }
 }
