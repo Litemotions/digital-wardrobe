@@ -712,18 +712,29 @@ export function App() {
     if (!selectedIds.size) return;
     setLookBusy(true);
     setLookError("");
+    // Composing several garments onto a reference photo genuinely takes a
+    // while, but it shouldn't spin forever — bail with a clear message if the
+    // network or the tunnel drops the connection before OpenAI responds.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 150_000);
     try {
       const response = await fetch(LOOKS_GENERATE_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ itemIds: [...selectedIds] }),
+        signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not generate that look.");
       setLookDraft(payload);
     } catch (requestError) {
-      setLookError(requestError.message);
+      setLookError(
+        requestError.name === "AbortError"
+          ? "This is taking too long and timed out. Try again with fewer items, or lower the image quality in the add-on settings."
+          : requestError.message
+      );
     } finally {
+      clearTimeout(timeout);
       setLookBusy(false);
     }
   };

@@ -82,8 +82,18 @@ function normalizeBoundingBox(value = {}) {
   return { x, y, width, height };
 }
 
-async function normalizeImage(bytes) {
-  return sharp(bytes).rotate().toColorspace("srgb").png().toBuffer();
+// Caps the longest edge before anything goes to OpenAI or gets stored as an
+// intermediate asset. Full-resolution phone photos (a model-reference.png
+// can easily be 8-12 MB) make every generation call slow to upload and cost
+// more input tokens for no visible quality gain — 1600px is already sharp
+// enough for these use cases. withoutEnlargement keeps small images as-is.
+async function normalizeImage(bytes, maxEdge = 1600) {
+  return sharp(bytes)
+    .rotate()
+    .resize({ width: maxEdge, height: maxEdge, fit: "inside", withoutEnlargement: true })
+    .toColorspace("srgb")
+    .png()
+    .toBuffer();
 }
 
 async function cropDetectedItem(bytes, boundingBox) {
@@ -577,8 +587,9 @@ export function wardrobeImportApi(options = {}) {
         const referenceSetting = setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
         const referencePath = path.resolve(root, referenceSetting);
         await mkdir(path.dirname(referencePath), { recursive: true });
-        // Normalise to PNG so downstream code that expects a PNG always finds one.
-        const png = await sharp(image.data).png().toBuffer();
+        // Normalise to PNG (and cap resolution — full-size phone photos are
+        // needlessly slow to re-upload to OpenAI on every generation call).
+        const png = await normalizeImage(image.data);
         await writeFile(referencePath, png);
         return json(res, 200, await setupStatus());
       }
