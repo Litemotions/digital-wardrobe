@@ -711,33 +711,53 @@ export function App() {
     setLookError("");
   };
 
+  // Composing several garments onto a reference photo genuinely takes 30-90s.
+  // A single request held open that long gets killed by Cloudflare's tunnel
+  // (~100s gateway timeout) before our own server can respond — so instead
+  // we kick the job off, get an id back immediately, and poll for the result,
+  // the same pattern the wardrobe import flow already uses successfully.
+  const pollLookJob = async (id, startedAt) => {
+    if (Date.now() - startedAt > 4 * 60 * 1000) {
+      setLookError("This is taking too long. Try again with fewer items, or lower the image quality in the add-on settings.");
+      setLookBusy(false);
+      return;
+    }
+    let payload;
+    try {
+      const response = await fetch(`${LOOKS_GENERATE_API}/${id}`, { cache: "no-store" });
+      payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not generate that look.");
+    } catch (requestError) {
+      setLookError(requestError.message);
+      setLookBusy(false);
+      return;
+    }
+    if (payload.status === "complete") {
+      setLookDraft(payload);
+      setLookBusy(false);
+    } else if (payload.status === "failed") {
+      setLookError(payload.error || "Could not generate that look.");
+      setLookBusy(false);
+    } else {
+      setTimeout(() => pollLookJob(id, startedAt), 1500);
+    }
+  };
+
   const requestLook = async () => {
     if (!selectedIds.size) return;
     setLookBusy(true);
     setLookError("");
-    // Composing several garments onto a reference photo genuinely takes a
-    // while, but it shouldn't spin forever — bail with a clear message if the
-    // network or the tunnel drops the connection before OpenAI responds.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 150_000);
     try {
       const response = await fetch(LOOKS_GENERATE_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ itemIds: [...selectedIds] }),
-        signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not generate that look.");
-      setLookDraft(payload);
+      pollLookJob(payload.id, Date.now());
     } catch (requestError) {
-      setLookError(
-        requestError.name === "AbortError"
-          ? "This is taking too long and timed out. Try again with fewer items, or lower the image quality in the add-on settings."
-          : requestError.message
-      );
-    } finally {
-      clearTimeout(timeout);
+      setLookError(requestError.message);
       setLookBusy(false);
     }
   };

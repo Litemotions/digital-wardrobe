@@ -365,6 +365,12 @@ export function wardrobeImportApi(options = {}) {
   let looksFile;
   let looksAssetDir;
   const running = new Map();
+  // Tracks in-flight look generations so the HTTP request that kicks one off
+  // can return immediately — Cloudflare (and most proxies) will kill a
+  // request that takes the ~30-90s an OpenAI multi-image composite can need,
+  // long before our own server would ever respond. The client polls this
+  // instead, the same pattern the import job flow already uses.
+  const lookJobs = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
 
@@ -664,26 +670,44 @@ export function wardrobeImportApi(options = {}) {
 
         const lookModel = setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")));
         const lookQuality = setting("OPENAI_IMAGE_QUALITY", "high");
-        let bytes;
-        try {
-          bytes = await openAIEdit({
-            key,
-            baseUrl: apiBaseUrl(),
-            model: lookModel,
-            quality: lookQuality,
-            size: "1024x1536",
-            images: [{ data: modelData, mime: "image/png", name: "model.png" }, ...garmentImages],
-            prompt,
-          });
-        } catch (error) {
-          console.error(`[looks/generate] OpenAI call failed (model=${lookModel}, quality=${lookQuality}, images=${garmentImages.length + 1}):`, error);
-          return json(res, 502, { error: error.message || "Could not generate that look. Check the add-on log for details." });
-        }
 
+        // Kick off the actual OpenAI call in the background and respond right
+        // away — a long-held request through Cloudflare's tunnel gets killed
+        // (~100s gateway timeout) well before a multi-image "high" quality
+        // composite can finish, which is what was causing silent failures.
         const id = randomUUID();
-        await mkdir(looksAssetDir, { recursive: true });
-        await writeFile(path.join(looksAssetDir, `${id}.png`), bytes);
-        return json(res, 200, { id, itemIds, image: `${LOOKS_ASSET_ROOT}/${id}.png` });
+        lookJobs.set(id, { status: "processing", itemIds, createdAt: Date.now() });
+        (async () => {
+          try {
+            const bytes = await openAIEdit({
+              key,
+              baseUrl: apiBaseUrl(),
+              model: lookModel,
+              quality: lookQuality,
+              size: "1024x1536",
+              images: [{ data: modelData, mime: "image/png", name: "model.png" }, ...garmentImages],
+              prompt,
+            });
+            await mkdir(looksAssetDir, { recursive: true });
+            await writeFile(path.join(looksAssetDir, `${id}.png`), bytes);
+            lookJobs.set(id, { status: "complete", itemIds, image: `${LOOKS_ASSET_ROOT}/${id}.png`, createdAt: Date.now() });
+          } catch (error) {
+            console.error(`[looks/generate] OpenAI call failed (model=${lookModel}, quality=${lookQuality}, images=${garmentImages.length + 1}):`, error);
+            lookJobs.set(id, { status: "failed", itemIds, error: error.message || "Could not generate that look.", createdAt: Date.now() });
+          }
+        })();
+        // Prune anything older than 30 minutes so this Map can't grow forever.
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        for (const [jobId, job] of lookJobs) if (job.createdAt < cutoff) lookJobs.delete(jobId);
+
+        return json(res, 202, { id, status: "processing" });
+      }
+
+      const lookJobMatch = url.pathname.match(/^\/api\/import\/looks\/generate\/([a-f0-9-]{36})$/i);
+      if (lookJobMatch && req.method === "GET") {
+        const job = lookJobs.get(lookJobMatch[1]);
+        if (!job) return json(res, 404, { error: "That look request has expired. Try generating again." });
+        return json(res, 200, { id: lookJobMatch[1], ...job });
       }
 
       if (url.pathname === LOOKS_ROOT && req.method === "POST") {
