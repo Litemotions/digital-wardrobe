@@ -9,10 +9,14 @@ import unzipper from "unzipper";
 const API_ROOT = "/api/import/jobs";
 const ASSET_ROOT = "/api/import/assets";
 const LIBRARY_ASSET_ROOT = "/api/import/library";
+const LOOKS_ROOT = "/api/import/looks";
+const LOOKS_ASSET_ROOT = "/api/import/looks/image";
 const STAGES = new Set(["crop", "garment", "modeled"]);
 const DECISIONS = new Set(["approve", "reject"]);
 const PARTS = new Set(["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"]);
+const PART_LABELS = { upperbody: "Top", wholebody_up: "Jacket", lowerbody: "Bottom", accessories_up: "Accessory", shoes: "Shoes" };
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const MAX_LOOK_ITEMS = 6;
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -348,6 +352,8 @@ export function wardrobeImportApi(options = {}) {
   let jobsDir;
   let importedFile;
   let libraryAssetDir;
+  let looksFile;
+  let looksAssetDir;
   const running = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
@@ -576,6 +582,127 @@ export function wardrobeImportApi(options = {}) {
         await writeFile(referencePath, png);
         return json(res, 200, await setupStatus());
       }
+
+      // --- Looks: compose a photo of you wearing several selected items ---
+      // one OpenAI call for the whole outfit (not one per item), and only
+      // when the user explicitly asks — this is the expensive step, so it's
+      // opt-in rather than automatic like the old per-item modeled preview.
+      async function loadLooks() {
+        try { return JSON.parse(await readFile(looksFile, "utf8")); }
+        catch (error) { if (error.code === "ENOENT") return []; throw error; }
+      }
+
+      if (url.pathname === LOOKS_ROOT && req.method === "GET") {
+        const looks = await loadLooks();
+        return json(res, 200, [...looks].sort((a, b) => b.createdAt - a.createdAt));
+      }
+
+      if (url.pathname === `${LOOKS_ROOT}/generate` && req.method === "POST") {
+        const setup = await setupStatus();
+        if (!setup.ready) {
+          return json(res, 503, { error: "Setup required: add your OpenAI API key and a model reference photo first." });
+        }
+        const input = await body(req);
+        const itemIds = Array.isArray(input.itemIds) ? [...new Set(input.itemIds)].filter((id) => typeof id === "string") : [];
+        if (!itemIds.length) return json(res, 400, { error: "Pick at least one item to generate a look." });
+        if (itemIds.length > MAX_LOOK_ITEMS) return json(res, 400, { error: `Pick at most ${MAX_LOOK_ITEMS} items for one look.` });
+
+        const records = await loadImported();
+        const selected = itemIds.map((id) => records.find((record) => record.id === id)).filter(Boolean);
+        if (selected.length !== itemIds.length) return json(res, 404, { error: "One or more selected items were not found." });
+
+        const key = setting("OPENAI_API_KEY");
+        const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+        let modelData;
+        try {
+          modelData = await readFile(modelPath);
+        } catch (error) {
+          if (error.code === "ENOENT") return json(res, 503, { error: `Model reference not found at ${modelPath}. Upload one from the wardrobe setup screen.` });
+          throw error;
+        }
+
+        const garmentImages = [];
+        for (const record of selected) {
+          const file = path.join(libraryAssetDir, path.basename(new URL(record.image, "http://localhost").pathname));
+          try {
+            garmentImages.push({ data: await readFile(file), name: `${record.id}.png`, label: `${PART_LABELS[record.part] || "Item"} — ${record.name}${record.color ? ` (${record.color})` : ""}` });
+          } catch (error) {
+            return json(res, 404, { error: `Could not read the image for "${record.name}".` });
+          }
+        }
+
+        const garmentList = garmentImages.map((image, index) => `Image ${index + 2}: ${image.label}`).join("\n");
+        const prompt = [
+          "Create a professional vertical 3:4 editorial fashion photograph of the person in Image 1",
+          `wearing this complete outfit, combining all of the following garments together naturally:`,
+          garmentList,
+          "",
+          "Preserve the person's recognizable identity, face, hair, age, and body proportions exactly.",
+          "Preserve every garment's color, material, fit, construction, graphic, logo, and distinctive",
+          "detail exactly as shown. Layer and combine the pieces the way a real outfit is worn (correct",
+          "tucking, layering order, and proportions) with realistic drape, fit, and shadow. Keep every",
+          "garment clearly visible and unobstructed. Use natural light, authentic fabric texture, and a",
+          "tasteful real-world setting. No text, watermark, product mockup, or synthetic appearance.",
+        ].join("\n");
+
+        let bytes;
+        try {
+          bytes = await openAIEdit({
+            key,
+            baseUrl: apiBaseUrl(),
+            model: setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2"))),
+            quality: setting("OPENAI_IMAGE_QUALITY", "high"),
+            size: "1024x1536",
+            images: [{ data: modelData, mime: "image/png", name: "model.png" }, ...garmentImages],
+            prompt,
+          });
+        } catch (error) {
+          return json(res, 502, { error: error.message || "Could not generate that look." });
+        }
+
+        const id = randomUUID();
+        await mkdir(looksAssetDir, { recursive: true });
+        await writeFile(path.join(looksAssetDir, `${id}.png`), bytes);
+        return json(res, 200, { id, itemIds, image: `${LOOKS_ASSET_ROOT}/${id}.png` });
+      }
+
+      if (url.pathname === LOOKS_ROOT && req.method === "POST") {
+        const input = await body(req);
+        const { id, itemIds, name } = input || {};
+        if (typeof id !== "string" || !/^[a-f0-9-]{36}$/i.test(id)) return json(res, 400, { error: "Missing or invalid look id." });
+        await stat(path.join(looksAssetDir, `${id}.png`)).catch(() => { throw Object.assign(new Error("That generated look has expired — generate it again."), { status: 404 }); });
+        const looks = await loadLooks();
+        const record = {
+          id,
+          name: typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : new Date().toLocaleDateString(),
+          itemIds: Array.isArray(itemIds) ? itemIds : [],
+          image: `${LOOKS_ASSET_ROOT}/${id}.png`,
+          createdAt: Date.now(),
+        };
+        await atomicJson(looksFile, [...looks.filter((look) => look.id !== id), record]);
+        return json(res, 200, record);
+      }
+
+      const lookDeleteMatch = url.pathname.match(/^\/api\/import\/looks\/([a-f0-9-]{36})$/i);
+      if (lookDeleteMatch && req.method === "DELETE") {
+        const id = lookDeleteMatch[1];
+        const looks = await loadLooks();
+        const next = looks.filter((look) => look.id !== id);
+        if (next.length === looks.length) return json(res, 404, { error: "Look not found" });
+        await atomicJson(looksFile, next);
+        await rm(path.join(looksAssetDir, `${id}.png`), { force: true });
+        return json(res, 200, { deleted: true, id });
+      }
+
+      const lookImageMatch = url.pathname.match(/^\/api\/import\/looks\/image\/([\w.-]+)$/i);
+      if (lookImageMatch && req.method === "GET") {
+        const file = path.join(looksAssetDir, path.basename(lookImageMatch[1]));
+        await stat(file);
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        return res.end(await readFile(file));
+      }
+
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
         const id = wardrobeDeleteMatch[1];
@@ -758,8 +885,11 @@ export function wardrobeImportApi(options = {}) {
       jobsDir = path.join(dataDir, "jobs");
       importedFile = path.join(dataDir, "library.json");
       libraryAssetDir = path.join(dataDir, "imported");
+      looksFile = path.join(dataDir, "looks.json");
+      looksAssetDir = path.join(dataDir, "looks");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });
+      await mkdir(looksAssetDir, { recursive: true });
       const ids = await readdir(jobsDir).catch(() => []);
       for (const id of ids) {
         const job = await loadJob(id);

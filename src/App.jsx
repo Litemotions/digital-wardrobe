@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Trash, X } from "@phosphor-icons/react";
+import { Check, Plus, Sparkle, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+
+const LOOKS_API = "/api/import/looks";
+const LOOKS_GENERATE_API = "/api/import/looks/generate";
+const MAX_LOOK_ITEMS = 6;
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -153,7 +157,7 @@ function sampleImageColor(image, canvas, event) {
   return null;
 }
 
-function GalleryItem({ item, selected, onOpen }) {
+function GalleryItem({ item, selected, selectMode, onOpen }) {
   const type = TYPE_MAP[item.part]?.singular || "wardrobe item";
 
   return (
@@ -161,7 +165,7 @@ function GalleryItem({ item, selected, onOpen }) {
       className={`gallery-item${selected ? " selected" : ""}`}
       type="button"
       onClick={() => onOpen(item.id)}
-      aria-label={`View ${item.name || type}`}
+      aria-label={selectMode ? `${selected ? "Deselect" : "Select"} ${item.name || type}` : `View ${item.name || type}`}
       aria-pressed={selected}
       data-testid={`wardrobe-item-${item.id}`}
     >
@@ -171,6 +175,11 @@ function GalleryItem({ item, selected, onOpen }) {
         sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(33vw - 18px), 180px"
         breakpoints={[120, 180, 240, 320, 480]}
       />
+      {selectMode && selected && (
+        <span className="gallery-item-check" aria-hidden="true">
+          <Check size={13} weight="bold" />
+        </span>
+      )}
     </button>
   );
 }
@@ -532,12 +541,80 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
+// Floating bar shown while picking items for a look. Sits bottom-center so it
+// never overlaps the import tray (bottom-left).
+function SelectionBar({ count, max, busy, onClear, onGenerate }) {
+  return (
+    <div className="selection-bar" role="status">
+      <span>{count} of {max} selected</span>
+      <button type="button" className="clear-btn" onClick={onClear}>Cancel</button>
+      <button type="button" className="generate-btn" disabled={!count || busy} onClick={onGenerate}>
+        {busy ? "Generating…" : <><Sparkle size={15} weight="fill" /> Generate look</>}
+      </button>
+    </div>
+  );
+}
+
+// Draft shown right after generation. Nothing is persisted until the user
+// hits Save — that's the point: tokens are spent once, on request, and the
+// result can still be discarded for free.
+function LookPreviewModal({ draft, itemNames, busy, error, onSave, onDiscard, onRegenerate }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onDiscard()}>
+      <div className="look-modal" role="dialog" aria-modal="true" aria-label="Generated look preview">
+        <img src={draft.image} alt="Generated look" />
+        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--muted)" }}>{itemNames.join(" · ")}</p>
+        <input
+          type="text"
+          placeholder="Name this look (optional)"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+        {error && <p className="status error" style={{ margin: "0 0 12px" }}>{error}</p>}
+        <div className="look-modal-actions">
+          <button type="button" onClick={onDiscard} disabled={busy}>Discard</button>
+          <button type="button" onClick={onRegenerate} disabled={busy}>{busy ? "Working…" : "Regenerate"}</button>
+          <button type="button" className="primary" onClick={() => onSave(name)} disabled={busy}>
+            <Check size={15} weight="bold" /> Save look
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LookViewer({ look, itemNames, onClose, onDelete }) {
+  return (
+    <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="look-modal" role="dialog" aria-modal="true" aria-label={look.name}>
+        <img src={look.image} alt={look.name} />
+        <h2 style={{ margin: "0 0 6px", fontSize: 18 }}>{look.name}</h2>
+        <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--muted)" }}>{itemNames.join(" · ")}</p>
+        <div className="look-modal-actions">
+          <button type="button" onClick={() => onDelete(look.id)}><Trash size={15} /> Delete</button>
+          <button type="button" className="primary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [items, setItems] = useState([]);
   const [activeType, setActiveType] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const [viewTab, setViewTab] = useState("wardrobe");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [looks, setLooks] = useState([]);
+  const [lookDraft, setLookDraft] = useState(null);
+  const [lookBusy, setLookBusy] = useState(false);
+  const [lookError, setLookError] = useState("");
+  const [viewingLookId, setViewingLookId] = useState(null);
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -553,9 +630,16 @@ export function App() {
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
+
+    fetch(LOOKS_API, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : []))
+      .then(setLooks)
+      .catch(() => {});
   }, []);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
+  const viewingLook = looks.find((look) => look.id === viewingLookId) || null;
+  const itemNameById = useMemo(() => Object.fromEntries(items.map((item) => [item.id, item.name || TYPE_MAP[item.part]?.singular || "Item"])), [items]);
 
   const visibleItems = useMemo(() => {
     const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
@@ -603,47 +687,194 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  const toggleSelect = (id) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < MAX_LOOK_ITEMS) next.add(id);
+      return next;
+    });
+  };
+
+  const startSelecting = () => {
+    setSelectMode(true);
+    setSelectedIds(new Set());
+    setSelectedId(null);
+  };
+
+  const cancelSelecting = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setLookError("");
+  };
+
+  const requestLook = async () => {
+    if (!selectedIds.size) return;
+    setLookBusy(true);
+    setLookError("");
+    try {
+      const response = await fetch(LOOKS_GENERATE_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds: [...selectedIds] }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not generate that look.");
+      setLookDraft(payload);
+    } catch (requestError) {
+      setLookError(requestError.message);
+    } finally {
+      setLookBusy(false);
+    }
+  };
+
+  const discardLookDraft = () => {
+    setLookDraft(null);
+    setLookError("");
+  };
+
+  const saveLookDraft = async (name) => {
+    if (!lookDraft) return;
+    setLookBusy(true);
+    setLookError("");
+    try {
+      const response = await fetch(LOOKS_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: lookDraft.id, itemIds: lookDraft.itemIds, name }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not save that look.");
+      setLooks((current) => [payload, ...current.filter((look) => look.id !== payload.id)]);
+      setLookDraft(null);
+      cancelSelecting();
+      setViewTab("looks");
+    } catch (requestError) {
+      setLookError(requestError.message);
+    } finally {
+      setLookBusy(false);
+    }
+  };
+
+  const deleteLook = async (id) => {
+    try {
+      const response = await fetch(`${LOOKS_API}/${id}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new Error("Could not delete that look.");
+    } catch (requestError) {
+      setError(requestError.message);
+      return;
+    }
+    setLooks((current) => current.filter((look) => look.id !== id));
+    setViewingLookId(null);
+  };
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
+            <p className="piece-count">
+              {viewTab === "wardrobe"
+                ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}`
+                : `${looks.length} ${looks.length === 1 ? "look" : "looks"}`}
+            </p>
+            <nav className="view-tabs" aria-label="Switch between wardrobe and looks">
+              <button type="button" className={viewTab === "wardrobe" ? "active" : ""} onClick={() => { setViewTab("wardrobe"); cancelSelecting(); }}>Wardrobe</button>
+              <button type="button" className={viewTab === "looks" ? "active" : ""} onClick={() => { setViewTab("looks"); cancelSelecting(); }}>Looks</button>
+            </nav>
+            {viewTab === "wardrobe" && !!items.length && (
+              selectMode
+                ? <button type="button" className="select-toggle" onClick={cancelSelecting}>Cancel</button>
+                : <button type="button" className="select-toggle" onClick={startSelecting}><Sparkle size={14} weight="fill" /> Create a look</button>
+            )}
           </div>
-          <nav className="category-nav" aria-label="Filter wardrobe by item type">
-            {TYPES.map((type) => (
-              <button
-                key={type.id}
-                type="button"
-                className={activeType === type.id ? "active" : ""}
-                onClick={() => chooseType(type.id)}
-                aria-pressed={activeType === type.id}
-              >
-                {type.label}
-              </button>
-            ))}
-          </nav>
+          {viewTab === "wardrobe" && (
+            <nav className="category-nav" aria-label="Filter wardrobe by item type">
+              {TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  className={activeType === type.id ? "active" : ""}
+                  onClick={() => chooseType(type.id)}
+                  aria-pressed={activeType === type.id}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </nav>
+          )}
         </header>
 
         {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
 
-        {!!items.length && (
-          <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
-            {visibleItems.map((item) => (
-              <GalleryItem
-                key={item.id}
-                item={item}
-                selected={selectedId === item.id}
-                onOpen={setSelectedId}
-              />
-            ))}
-          </section>
+        {viewTab === "wardrobe" ? (
+          <>
+            {!error && loading && <p className="status">Loading wardrobe</p>}
+            {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+            {!!items.length && (
+              <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
+                {visibleItems.map((item) => (
+                  <GalleryItem
+                    key={item.id}
+                    item={item}
+                    selected={selectMode ? selectedIds.has(item.id) : selectedId === item.id}
+                    selectMode={selectMode}
+                    onOpen={selectMode ? toggleSelect : setSelectedId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        ) : (
+          <>
+            {!looks.length && <p className="status empty">No looks yet. Tap "Create a look" in your wardrobe, pick a few pieces, and generate one.</p>}
+            {!!looks.length && (
+              <section className="looks-grid" aria-label="Saved looks">
+                {looks.map((look) => (
+                  <button key={look.id} type="button" className="look-card" onClick={() => setViewingLookId(look.id)}>
+                    <img src={look.image} alt={look.name} loading="lazy" />
+                    <span className="look-name">{look.name}</span>
+                  </button>
+                ))}
+              </section>
+            )}
+          </>
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && !selectMode && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+
+      {selectMode && (
+        <SelectionBar
+          count={selectedIds.size}
+          max={MAX_LOOK_ITEMS}
+          busy={lookBusy}
+          onClear={cancelSelecting}
+          onGenerate={requestLook}
+        />
+      )}
+
+      {lookDraft && (
+        <LookPreviewModal
+          draft={lookDraft}
+          itemNames={lookDraft.itemIds.map((id) => itemNameById[id] || "Item")}
+          busy={lookBusy}
+          error={lookError}
+          onSave={saveLookDraft}
+          onDiscard={discardLookDraft}
+          onRegenerate={requestLook}
+        />
+      )}
+
+      {viewingLook && (
+        <LookViewer
+          look={viewingLook}
+          itemNames={viewingLook.itemIds.map((id) => itemNameById[id] || "Item")}
+          onClose={() => setViewingLookId(null)}
+          onDelete={deleteLook}
+        />
+      )}
+
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );
