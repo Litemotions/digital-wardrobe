@@ -104,11 +104,18 @@ async function cropDetectedItem(bytes, boundingBox) {
   const rawTop = (box.y / 1000) * height;
   const rawWidth = (box.width / 1000) * width;
   const rawHeight = (box.height / 1000) * height;
-  const padding = Math.max(12, Math.round(Math.max(rawWidth, rawHeight) * 0.08));
-  const left = Math.max(0, Math.floor(rawLeft - padding));
-  const top = Math.max(0, Math.floor(rawTop - padding));
-  const right = Math.min(width, Math.ceil(rawLeft + rawWidth + padding));
-  const bottom = Math.min(height, Math.ceil(rawTop + rawHeight + padding));
+  // Thin, small, or low-contrast items (a belt against dark trousers, a
+  // watch, a thin strap) are the easiest for the vision model to slightly
+  // mis-locate, and a tight crop leaves zero margin for that error. Pad
+  // generously relative to the box's own size, with an absolute floor tied
+  // to the *source* image so very thin boxes still get a sensible amount of
+  // surrounding context rather than a sliver.
+  const paddingX = Math.max(24, Math.round(rawWidth * 0.25), Math.round(width * 0.035));
+  const paddingY = Math.max(24, Math.round(rawHeight * 0.25), Math.round(height * 0.035));
+  const left = Math.max(0, Math.floor(rawLeft - paddingX));
+  const top = Math.max(0, Math.floor(rawTop - paddingY));
+  const right = Math.min(width, Math.ceil(rawLeft + rawWidth + paddingX));
+  const bottom = Math.min(height, Math.ceil(rawTop + rawHeight + paddingY));
   return sharp(normalized).extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) }).png().toBuffer();
 }
 
@@ -343,7 +350,7 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime, singleItem = fa
   // entirely and describe the whole frame as exactly one wardrobe item.
   const detectionText = singleItem
     ? "This photo has already been cropped by the user to show exactly one wearable wardrobe item — it may be a matching pair (for example, both shoes of one pair, or a pair of gloves). Do not attempt to detect sub-regions or split it into multiple items. Return exactly one record describing this single item, with its bounding box covering the entire image: x:0, y:0, width:1000, height:1000. Use only these category ids: upperbody, wholebody_up, lowerbody, accessories_up, shoes. Suggest a concise specific name, primary hex color, optional genuinely distinct secondary hex color, and 1-4 useful lowercase detail tags."
-    : "Identify every distinct wearable clothing item visible in this image. A photo may show one isolated garment or a person wearing several items. Return one record per actual item that should enter a wardrobe. If a matching pair of shoes (or gloves) is shown — both the left and right of the same pair — treat that pair as a SINGLE item; do not create two separate entries for one pair. Ignore the person's body and non-wearable background objects. For each item, include a tight bounding box around only that item using integer coordinates normalized to a 1000 by 1000 image: x and y are the top-left corner, followed by width and height. Boxes may overlap when garments overlap, but each box must focus on one distinct item. Use only these category ids: upperbody, wholebody_up, lowerbody, accessories_up, shoes. Suggest a concise specific name, primary hex color, optional genuinely distinct secondary hex color, and 1-4 useful lowercase detail tags.";
+    : "Identify every distinct wearable clothing item visible in this image. A photo may show one isolated garment or a person wearing several items. Return one record per actual item that should enter a wardrobe. If a matching pair of shoes (or gloves) is shown — both the left and right of the same pair — treat that pair as a SINGLE item; do not create two separate entries for one pair. Ignore the person's body and non-wearable background objects. For each item, include a bounding box around that item using integer coordinates normalized to a 1000 by 1000 image: x and y are the top-left corner, followed by width and height. The box should comfortably contain the whole item with a bit of margin around it — err on the side of a slightly generous box rather than a razor-tight one, especially for small, thin, or low-contrast items like belts, watches, or straps that are easy to mis-locate precisely. Boxes may overlap when garments overlap, but each box must focus on one distinct item. Use only these category ids: upperbody, wholebody_up, lowerbody, accessories_up, shoes. Suggest a concise specific name, primary hex color, optional genuinely distinct secondary hex color, and 1-4 useful lowercase detail tags.";
   const itemCount = singleItem ? { minItems: 1, maxItems: 1 } : { minItems: 0, maxItems: 8 };
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
