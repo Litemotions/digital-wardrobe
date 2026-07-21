@@ -855,6 +855,78 @@ export function wardrobeImportApi(options = {}) {
         return res.end(await readFile(file));
       }
 
+      // Fix a styling detail on an already-saved look (same idea as the
+      // wardrobe item "Regenerate image" field). Only the current look photo
+      // is sent back — the garments/model reference don't need re-sending,
+      // the correction is a targeted edit of the existing composite — and
+      // this is just as slow as the original composite, so it's the same
+      // async job + poll pattern (reusing the /looks/generate/:id poller).
+      const lookRegenerateMatch = url.pathname.match(/^\/api\/import\/looks\/([a-f0-9-]{36})\/regenerate$/i);
+      if (lookRegenerateMatch && req.method === "POST") {
+        const id = lookRegenerateMatch[1];
+        const setup = await setupStatus();
+        if (!setup.ready) return json(res, 503, { error: "Setup required: add your OpenAI API key first." });
+        const looks = await loadLooks();
+        const look = looks.find((item) => item.id === id);
+        if (!look) return json(res, 404, { error: "Look not found." });
+        const input = await body(req);
+        const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 500) : "";
+        if (!prompt) return json(res, 400, { error: "Describe what to change, e.g. \"untuck the shirt\"." });
+
+        const currentFile = path.join(looksAssetDir, path.basename(new URL(look.image, "http://localhost").pathname));
+        let currentImage;
+        try {
+          currentImage = await readFile(currentFile);
+        } catch (error) {
+          console.error(`[looks/regenerate] could not read ${currentFile}:`, error);
+          return json(res, 404, { error: "Could not read this look's current image." });
+        }
+
+        const key = setting("OPENAI_API_KEY");
+        const lookModel = setting("OPENAI_LOOK_MODEL", setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")));
+        const lookQuality = setting("OPENAI_IMAGE_QUALITY", "high");
+        const fullPrompt = [
+          "This is a professional editorial fashion photograph of a person wearing a complete outfit.",
+          "Keep the person's identity, pose, framing, lighting, background, and every garment's color,",
+          "material, fit, and construction exactly as shown. Apply ONLY this specific correction and",
+          "change nothing else:",
+          prompt,
+        ].join("\n");
+
+        const jobId = randomUUID();
+        lookJobs.set(jobId, { status: "processing", itemIds: look.itemIds, createdAt: Date.now() });
+        (async () => {
+          try {
+            let bytes = await openAIEdit({
+              key,
+              baseUrl: apiBaseUrl(),
+              model: lookModel,
+              quality: lookQuality,
+              size: "1024x1536",
+              images: [{ data: currentImage, mime: "image/png", name: "current.png" }],
+              prompt: fullPrompt,
+            });
+            await writeFile(currentFile, bytes);
+            // Same cache-busting-must-be-persisted fix as the wardrobe item
+            // regenerate endpoint: the file is served immutable for a year
+            // under an unchanging filename, so the saved record needs a
+            // fresh URL or a page refresh will show the stale cached image.
+            const bustedImage = `${LOOKS_ASSET_ROOT}/${path.basename(currentFile)}?v=${Date.now()}`;
+            const freshLooks = await loadLooks();
+            const nextLooks = freshLooks.map((item) => item.id === id ? { ...item, image: bustedImage } : item);
+            await atomicJson(looksFile, nextLooks);
+            lookJobs.set(jobId, { status: "complete", itemIds: look.itemIds, image: bustedImage, createdAt: Date.now() });
+          } catch (error) {
+            console.error(`[looks/regenerate] OpenAI call failed (model=${lookModel}, quality=${lookQuality}) for ${id}:`, error);
+            lookJobs.set(jobId, { status: "failed", itemIds: look.itemIds, error: error.message || "Could not regenerate that look.", createdAt: Date.now() });
+          }
+        })();
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        for (const [existingJobId, job] of lookJobs) if (job.createdAt < cutoff) lookJobs.delete(existingJobId);
+
+        return json(res, 202, { id: jobId, status: "processing" });
+      }
+
       // Regenerate an already-saved wardrobe item's garment image with a
       // styling correction (e.g. "the ring has a flat top, not fully
       // rounded"). Uses the item's current clean cutout as the reference —

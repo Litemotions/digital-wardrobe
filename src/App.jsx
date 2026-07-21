@@ -645,7 +645,24 @@ function LookPreviewModal({ draft, items, busy, error, onSave, onDiscard, onRege
   );
 }
 
-function LookViewer({ look, items, onClose, onDelete }) {
+function LookViewer({ look, items, onClose, onDelete, onRegenerate }) {
+  const [regenPrompt, setRegenPrompt] = useState("");
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenError, setRegenError] = useState("");
+
+  const runRegenerate = async () => {
+    if (!regenPrompt.trim()) { setRegenError("Describe what to change first."); return; }
+    setRegenBusy(true); setRegenError("");
+    try {
+      await onRegenerate(look.id, regenPrompt.trim());
+      setRegenPrompt("");
+    } catch (regenerateError) {
+      setRegenError(regenerateError.message);
+    } finally {
+      setRegenBusy(false);
+    }
+  };
+
   return (
     <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="look-modal" role="dialog" aria-modal="true" aria-label={look.name}>
@@ -653,6 +670,21 @@ function LookViewer({ look, items, onClose, onDelete }) {
         <h2 style={{ margin: "0 0 10px", fontSize: 18 }}>{look.name}</h2>
         <p className="look-items-label">Includes</p>
         <LookItemsRow items={items} />
+        <div className="regen-field">
+          <label htmlFor={`look-regen-${look.id}`}>Fix the image</label>
+          <textarea
+            id={`look-regen-${look.id}`}
+            value={regenPrompt}
+            onChange={(event) => setRegenPrompt(event.target.value)}
+            placeholder="e.g. untuck the shirt, remove the watch"
+            rows={2}
+            disabled={regenBusy}
+          />
+          {regenError && <p className="status error" style={{ margin: "6px 0 0" }}>{regenError}</p>}
+          <button type="button" className="secondary-button" disabled={regenBusy} onClick={runRegenerate} style={{ marginTop: 8 }}>
+            {regenBusy ? "Regenerating…" : "Regenerate image"}
+          </button>
+        </div>
         <div className="look-modal-actions">
           <button type="button" onClick={() => onDelete(look.id)}><Trash size={15} /> Delete</button>
           <button type="button" className="primary" onClick={onClose}>Close</button>
@@ -863,6 +895,37 @@ export function App() {
     }
   };
 
+  // Fix a styling detail on an already-saved look. Mirrors regenerateItemImage,
+  // but the actual edit is slow enough to need the same job+poll dance as the
+  // original look generation, so this awaits that polling loop itself instead
+  // of handing off to pollLookJob (which drives the lookDraft/lookBusy state
+  // for the *drafting* flow, not a saved look already being viewed).
+  const regenerateLookImage = async (id, prompt) => {
+    const response = await fetch(`${LOOKS_API}/${id}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not regenerate that look.");
+    const jobId = payload.id;
+    const startedAt = Date.now();
+    for (;;) {
+      if (Date.now() - startedAt > 4 * 60 * 1000) {
+        throw new Error("This is taking too long. Try again, or with a simpler fix.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const pollResponse = await fetch(`${LOOKS_GENERATE_API}/${jobId}`, { cache: "no-store" });
+      const pollPayload = await pollResponse.json().catch(() => ({}));
+      if (!pollResponse.ok) throw new Error(pollPayload.error || "Could not regenerate that look.");
+      if (pollPayload.status === "complete") {
+        setLooks((current) => current.map((look) => look.id === id ? { ...look, image: pollPayload.image } : look));
+        return;
+      }
+      if (pollPayload.status === "failed") throw new Error(pollPayload.error || "Could not regenerate that look.");
+    }
+  };
+
   const deleteLook = async (id) => {
     try {
       const response = await fetch(`${LOOKS_API}/${id}`, { method: "DELETE" });
@@ -986,6 +1049,7 @@ export function App() {
           items={itemsForIds(viewingLook.itemIds)}
           onClose={() => setViewingLookId(null)}
           onDelete={deleteLook}
+          onRegenerate={regenerateLookImage}
         />
       )}
 
