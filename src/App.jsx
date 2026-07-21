@@ -6,6 +6,7 @@ import { OptimizedImage } from "./OptimizedImage.jsx";
 const LOOKS_API = "/api/import/looks";
 const LOOKS_GENERATE_API = "/api/import/looks/generate";
 const MAX_LOOK_ITEMS = 6;
+const MAX_COMPARE_LOOKS = 3;
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -725,7 +726,7 @@ function LookViewer({ look, items, onClose, onDelete, onRegenerate, onRename }) 
 // reported to the parent once the drag ends. `order` mirrors the `looks`
 // prop but is kept as its own state so a drag in progress isn't clobbered by
 // a prop update (e.g. from an unrelated poll/refresh).
-function LooksGrid({ looks, onOpen, onReorder }) {
+function LooksGrid({ looks, onOpen, onReorder, compareMode, compareIds, onToggleCompare }) {
   const [order, setOrder] = useState(looks);
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
@@ -735,13 +736,14 @@ function LooksGrid({ looks, onOpen, onReorder }) {
   }, [looks]);
 
   const handlePointerDown = (event, id) => {
+    if (compareMode) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     dragRef.current = { id, pointerId: event.pointerId, moved: false };
   };
 
   const handlePointerMove = (event) => {
     const dragging = dragRef.current;
-    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    if (compareMode || !dragging || event.pointerId !== dragging.pointerId) return;
     const target = document.elementFromPoint(event.clientX, event.clientY);
     const card = target?.closest("[data-look-id]");
     if (!card) return;
@@ -769,6 +771,7 @@ function LooksGrid({ looks, onOpen, onReorder }) {
   };
 
   const handleClick = (id) => {
+    if (compareMode) { onToggleCompare(id); return; }
     if (suppressClickRef.current) { suppressClickRef.current = false; return; }
     onOpen(id);
   };
@@ -780,7 +783,8 @@ function LooksGrid({ looks, onOpen, onReorder }) {
           key={look.id}
           type="button"
           data-look-id={look.id}
-          className="look-card"
+          className={`look-card${compareMode ? " compare-mode" : ""}${compareMode && compareIds.has(look.id) ? " selected" : ""}`}
+          aria-pressed={compareMode ? compareIds.has(look.id) : undefined}
           onPointerDown={(event) => handlePointerDown(event, look.id)}
           onPointerMove={handlePointerMove}
           onPointerUp={finishDrag}
@@ -788,10 +792,51 @@ function LooksGrid({ looks, onOpen, onReorder }) {
           onClick={() => handleClick(look.id)}
         >
           <img src={look.image} alt={look.name} loading="lazy" draggable={false} />
+          {compareMode && compareIds.has(look.id) && (
+            <span className="gallery-item-check" aria-hidden="true">
+              <Check size={13} weight="bold" />
+            </span>
+          )}
           <span className="look-name">{look.name}</span>
         </button>
       ))}
     </section>
+  );
+}
+
+// Floating bar shown while picking looks to compare — same shape as
+// SelectionBar (looks picking items for a look), reusing its CSS classes.
+function CompareBar({ count, max, onClear, onCompare }) {
+  return (
+    <div className="selection-bar" role="status">
+      <span>{count} of {max} selected</span>
+      <button type="button" className="clear-btn" onClick={onClear}>Cancel</button>
+      <button type="button" className="generate-btn" disabled={count < 2} onClick={onCompare}>
+        Compare
+      </button>
+    </div>
+  );
+}
+
+// Side-by-side view of 2-3 looks at a bigger size, for eyeballing which one
+// looks best. Read-only — no editing here, just a bigger look at the photos.
+function CompareModal({ looks, onClose }) {
+  return (
+    <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="compare-modal" role="dialog" aria-modal="true" aria-label="Compare looks">
+        <div className="compare-modal-grid" style={{ gridTemplateColumns: `repeat(${looks.length}, 1fr)` }}>
+          {looks.map((look) => (
+            <div className="compare-modal-item" key={look.id}>
+              <img src={look.image} alt={look.name} />
+              <span>{look.name}</span>
+            </div>
+          ))}
+        </div>
+        <div className="look-modal-actions">
+          <button type="button" className="primary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -811,6 +856,9 @@ export function App() {
   const [lookError, setLookError] = useState("");
   const [lookNotes, setLookNotes] = useState("");
   const [viewingLookId, setViewingLookId] = useState(null);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareIds, setCompareIds] = useState(() => new Set());
+  const [comparingIds, setComparingIds] = useState(null);
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -835,6 +883,7 @@ export function App() {
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
   const viewingLook = looks.find((look) => look.id === viewingLookId) || null;
+  const compareLooks = comparingIds ? comparingIds.map((id) => looks.find((look) => look.id === id)).filter(Boolean) : [];
   const itemById = useMemo(() => Object.fromEntries(items.map((item) => [item.id, item])), [items]);
   const itemsForIds = (ids) => ids.map((id) => itemById[id]).filter(Boolean);
 
@@ -1069,6 +1118,32 @@ export function App() {
     setViewingLookId(null);
   };
 
+  const startComparing = () => {
+    setCompareMode(true);
+    setCompareIds(new Set());
+  };
+
+  const cancelComparing = () => {
+    setCompareMode(false);
+    setCompareIds(new Set());
+  };
+
+  const toggleCompare = (id) => {
+    setCompareIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < MAX_COMPARE_LOOKS) next.add(id);
+      return next;
+    });
+  };
+
+  const openCompare = () => setComparingIds([...compareIds]);
+
+  const closeCompare = () => {
+    setComparingIds(null);
+    cancelComparing();
+  };
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
@@ -1090,6 +1165,11 @@ export function App() {
                 selectMode
                   ? <button type="button" className="select-toggle" onClick={cancelSelecting}>Cancel</button>
                   : <button type="button" className="select-toggle" onClick={startSelecting}><Sparkle size={14} weight="fill" /> Create a look</button>
+              )}
+              {viewTab === "looks" && looks.length > 1 && (
+                compareMode
+                  ? <button type="button" className="select-toggle" onClick={cancelComparing}>Cancel</button>
+                  : <button type="button" className="select-toggle" onClick={startComparing}>Compare looks</button>
               )}
             </div>
           </div>
@@ -1134,7 +1214,14 @@ export function App() {
           <>
             {!looks.length && <p className="status empty">No looks yet. Tap "Create a look" in your wardrobe, pick a few pieces, and generate one.</p>}
             {!!looks.length && (
-              <LooksGrid looks={looks} onOpen={setViewingLookId} onReorder={reorderLooks} />
+              <LooksGrid
+                looks={looks}
+                onOpen={setViewingLookId}
+                onReorder={reorderLooks}
+                compareMode={compareMode}
+                compareIds={compareIds}
+                onToggleCompare={toggleCompare}
+              />
             )}
           </>
         )}
@@ -1177,6 +1264,12 @@ export function App() {
           onRename={renameLook}
         />
       )}
+
+      {compareMode && (
+        <CompareBar count={compareIds.size} max={MAX_COMPARE_LOOKS} onClear={cancelComparing} onCompare={openCompare} />
+      )}
+
+      {comparingIds && <CompareModal looks={compareLooks} onClose={closeCompare} />}
 
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
