@@ -70,6 +70,29 @@
 }
 .import-single-item-toggle input { margin-top: 3px; flex-shrink: 0; }
 
+.import-url-row {
+  display: flex;
+  gap: 8px;
+  width: min(420px, 100%);
+  margin-top: 14px;
+}
+
+.import-url-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--import-line);
+  border-radius: 999px;
+  background: var(--import-paper);
+  color: var(--import-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.import-url-row input:focus { outline: 2px solid var(--import-ink); outline-offset: 1px; }
+.import-url-row input:disabled { opacity: .6; }
+.import-url-row .import-button { white-space: nowrap; }
+
 /* Bottom-left launcher that expands from a compact pill into a tool tray. */
 .import-tray {
   position: fixed;

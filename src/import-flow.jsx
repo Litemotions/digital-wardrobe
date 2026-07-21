@@ -234,6 +234,37 @@ function SetupCard({ setup, onUpdated }) {
   );
 }
 
+function EmptyImportCard({ notice, setNotice, setup, singleItemMode, setSingleItemMode, importUrl, setImportUrl, urlBusy, submitUrl, onChooseImages }) {
+  return (
+    <div className="import-drop-target">
+      <UploadSimple size={28} />
+      <h2>{notice ? "Try another image" : "Choose or paste an image"}</h2>
+      <p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p>
+      <label className="import-single-item-toggle">
+        <input type="checkbox" checked={singleItemMode} onChange={(event) => setSingleItemMode(event.target.checked)} />
+        Already cropped to one item (or one pair, e.g. shoes) — don't detect or split it
+      </label>
+      <button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); onChooseImages(); }}>Choose images</button>
+      <div className="import-url-row">
+        <input
+          type="url"
+          value={importUrl}
+          onChange={(event) => setImportUrl(event.target.value)}
+          placeholder="Or paste a product page link"
+          disabled={!setup?.ready || urlBusy}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitUrl(); } }}
+        />
+        <button type="button" className="import-button" disabled={!setup?.ready || urlBusy || !importUrl.trim()} onClick={submitUrl}>
+          {urlBusy ? "Importing…" : "Import from link"}
+        </button>
+      </div>
+      <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
+        or <RestoreButton label="restore from a ZIP backup" onSuccess={(result) => { alert(`Restored ${result.items || 0} items and ${result.images || 0} images.`); window.location.reload(); }} />
+      </div>
+    </div>
+  );
+}
+
 export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
   const inputRef = useRef(null);
   const [jobs, setJobs] = useState([]);
@@ -250,6 +281,8 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
   // When on, skip auto-detection/splitting entirely — the photo is treated as
   // exactly one already-cropped item (or a pair, e.g. shoes), used as-is.
   const [singleItemMode, setSingleItemMode] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [urlBusy, setUrlBusy] = useState(false);
 
   useEffect(() => {
     api(CONFIG_API).then(setSetup).catch((requestError) => setSetup({ ready: false, error: requestError.message }));
@@ -296,6 +329,29 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
       } catch (requestError) { setError(requestError.message); }
     }
   }, [setup, singleItemMode]);
+
+  const submitUrl = useCallback(async () => {
+    const trimmed = importUrl.trim();
+    if (!trimmed) return;
+    if (!setup?.ready) { setOpen(true); return; }
+    setUrlBusy(true); setError(""); setNotice(null);
+    try {
+      const result = await api("/api/import/from-url", { method: "POST", body: JSON.stringify({ url: trimmed, singleItem: singleItemMode }) });
+      const createdJobs = result.jobs || [];
+      if (!createdJobs.length && result.noClothingDetected) {
+        setNotice({ tone: "complete", text: "No clothing detected", detail: "We couldn’t find a distinct wearable item in that page's image." });
+        setOpen(true);
+      } else {
+        setJobs((current) => [...current, ...createdJobs]);
+        setDrafts((current) => ({ ...current, ...Object.fromEntries(createdJobs.map((job) => [job.id, defaultDraft(job)])) }));
+        setImportUrl("");
+      }
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUrlBusy(false);
+    }
+  }, [importUrl, setup, singleItemMode]);
 
   useEffect(() => {
     let depth = 0;
@@ -382,7 +438,18 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
       <div className="import-popover-backdrop" data-open={open} onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
         <section className="import-popover" role="dialog" aria-modal="true" aria-labelledby="import-title">
           <header className="import-popover__header"><div><p className="import-popover__eyebrow">Wardrobe import</p><h2 className="import-popover__title" id="import-title">{readyCount ? `${readyCount} ready for review` : activeStatus?.tone === "error" ? "Import needs attention" : jobs.length ? "Preparing new pieces" : notice?.text || "Add to your wardrobe"}</h2></div><button className="import-icon-button" type="button" onClick={() => setOpen(false)} aria-label="Close import progress"><X size={20} /></button></header>
-          {!jobs.length ? setupRequired ? <SetupCard setup={setup} onUpdated={setSetup} /> : <div className="import-drop-target"><UploadSimple size={28} /><h2>{notice ? "Try another image" : "Choose or paste an image"}</h2><p>{notice?.detail || "We’ll isolate each clothing item, suggest its details, and hold everything for your approval."}</p><label className="import-single-item-toggle"><input type="checkbox" checked={singleItemMode} onChange={(event) => setSingleItemMode(event.target.checked)} /> Already cropped to one item (or one pair, e.g. shoes) — don't detect or split it</label><button className="import-button import-button--primary" disabled={!setup?.ready} onClick={() => { setNotice(null); inputRef.current?.click(); }}>Choose images</button><div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>or <RestoreButton label="restore from a ZIP backup" onSuccess={(result) => { alert(`Restored ${result.items || 0} items and ${result.images || 0} images.`); window.location.reload(); }} /></div></div> : (
+          {!jobs.length ? setupRequired ? <SetupCard setup={setup} onUpdated={setSetup} /> : <EmptyImportCard
+            notice={notice}
+            setNotice={setNotice}
+            setup={setup}
+            singleItemMode={singleItemMode}
+            setSingleItemMode={setSingleItemMode}
+            importUrl={importUrl}
+            setImportUrl={setImportUrl}
+            urlBusy={urlBusy}
+            submitUrl={submitUrl}
+            onChooseImages={() => inputRef.current?.click()}
+          /> : (
             <>
               <div className={`import-progress${activeStatus?.tone !== "processing" ? " is-reviewing" : progress < 100 ? " is-indeterminate" : ""}`}><div className="import-progress__meta"><span>{activeStatus?.text}</span><span>{jobs.length} {jobs.length === 1 ? "item" : "items"}</span></div>{activeStatus?.tone === "processing" && <div className="import-progress__track"><div className="import-progress__bar" style={{ "--import-progress": `${progress}%` }} /></div>}</div>
               {reviewJob && reviewStage ? <ReviewEditor job={reviewJob} stage={reviewStage} draft={drafts[reviewJob.id] || defaultDraft(reviewJob)} setDraft={(draft) => setDrafts((current) => ({ ...current, [reviewJob.id]: draft }))} regenPrompt={regenerationPrompts[`${reviewJob.id}:${reviewStage}`] || ""} setRegenPrompt={(prompt) => setRegenerationPrompts((current) => ({ ...current, [`${reviewJob.id}:${reviewStage}`]: prompt }))} busy={busyId === reviewJob.id} onAction={(action, prompt) => perform(reviewJob, reviewStage, action, prompt)} /> : reviewJob && hasCleanupFailure(reviewJob) ? <CleanupEditor job={reviewJob} tolerance={cleanupTolerances[reviewJob.id] ?? reviewJob.stages.garment.cleanupTolerance ?? 46} setTolerance={(tolerance) => setCleanupTolerances((current) => ({ ...current, [reviewJob.id]: tolerance }))} busy={busyId === reviewJob.id} onPreview={(tolerance) => performCleanup(reviewJob, "preview", tolerance)} onAccept={() => performCleanup(reviewJob, "accept")} /> : null}

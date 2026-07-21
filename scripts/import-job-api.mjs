@@ -373,6 +373,93 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime, singleItem = fa
   return parsed.items;
 }
 
+const PAGE_FETCH_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+const MAX_URL_IMAGE_BYTES = 20 * 1024 * 1024;
+
+// Basic SSRF guard: this endpoint lets a signed-in user make the server
+// fetch an arbitrary URL, so refuse anything obviously aimed at the local
+// network or loopback rather than a public product page.
+function isDisallowedHost(hostname) {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(lower)) return true;
+  if (lower.endsWith(".local") || lower.endsWith(".internal")) return true;
+  if (/^10\./.test(lower)) return true;
+  if (/^192\.168\./.test(lower)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(lower)) return true;
+  if (/^169\.254\./.test(lower)) return true;
+  return false;
+}
+
+function assertPublicHttpUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("That doesn't look like a valid URL.");
+  }
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error("Only http:// and https:// links are supported.");
+  if (isDisallowedHost(parsed.hostname)) throw new Error("That address isn't allowed.");
+  return parsed;
+}
+
+// Finds the main product photo on a page via the same meta tags almost every
+// e-commerce site already sets for link previews (Open Graph / Twitter Card),
+// so this works across shops without per-site scraping rules.
+async function extractProductImageUrl(pageUrl) {
+  const parsed = assertPublicHttpUrl(pageUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let html;
+  try {
+    const response = await fetch(parsed.toString(), {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "User-Agent": PAGE_FETCH_USER_AGENT, Accept: "text/html,application/xhtml+xml" },
+    });
+    if (!response.ok) throw new Error(`Could not load that page (HTTP ${response.status}).`);
+    html = await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+  const patterns = [
+    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["']/i,
+    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i,
+    /<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) {
+      try {
+        return new URL(match[1], parsed).toString();
+      } catch { /* try the next pattern */ }
+    }
+  }
+  throw new Error("Couldn't find a product image on that page. Try saving the photo and uploading it instead.");
+}
+
+async function downloadImage(imageUrl) {
+  const parsed = assertPublicHttpUrl(imageUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(parsed.toString(), {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "User-Agent": PAGE_FETCH_USER_AGENT },
+    });
+    if (!response.ok) throw new Error(`Image request failed (HTTP ${response.status}).`);
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > MAX_URL_IMAGE_BYTES) throw new Error("That image is too large.");
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > MAX_URL_IMAGE_BYTES) throw new Error("That image is too large.");
+    return buffer;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function wardrobeImportApi(options = {}) {
   let root;
   let jobsDir;
@@ -850,20 +937,11 @@ export function wardrobeImportApi(options = {}) {
         res.setHeader("Cache-Control", "no-store");
         return res.end(await readFile(file));
       }
-      if (url.pathname === API_ROOT && req.method === "POST") {
-        const setup = await setupStatus();
-        if (!setup.ready) {
-          const missing = [
-            !setup.hasApiKey && "OPENAI_API_KEY in .env",
-            !setup.hasModelReference && `a PNG photo of yourself at ${setup.modelReference}`,
-          ].filter(Boolean).join(" and ");
-          return json(res, 503, { error: `Setup required: add ${missing}, then restart the app.` });
-        }
-        const input = await body(req);
-        const image = decodeImage(input);
-        const normalizedImage = await normalizeImage(image.data);
+      // Shared by both direct uploads and "import from a link" — everything
+      // downstream of "we have the raw image bytes" is identical.
+      async function createJobsFromImageBytes(rawBytes, { singleItem = false } = {}) {
+        const normalizedImage = await normalizeImage(rawBytes);
         const key = setting("OPENAI_API_KEY");
-        const singleItem = Boolean(input.singleItem);
         const detected = (await openAIAnalyze({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"), image: normalizedImage, mime: "image/png", singleItem })).map(normalizeMetadata);
         const jobs = [];
         for (const metadata of detected) {
@@ -883,7 +961,54 @@ export function wardrobeImportApi(options = {}) {
           job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
           await saveJob(job); jobs.push(publicJob(job));
         }
+        return jobs;
+      }
+
+      if (url.pathname === API_ROOT && req.method === "POST") {
+        const setup = await setupStatus();
+        if (!setup.ready) {
+          const missing = [
+            !setup.hasApiKey && "OPENAI_API_KEY in .env",
+            !setup.hasModelReference && `a PNG photo of yourself at ${setup.modelReference}`,
+          ].filter(Boolean).join(" and ");
+          return json(res, 503, { error: `Setup required: add ${missing}, then restart the app.` });
+        }
+        const input = await body(req);
+        const image = decodeImage(input);
+        const jobs = await createJobsFromImageBytes(image.data, { singleItem: Boolean(input.singleItem) });
         return json(res, 202, { jobs, noClothingDetected: jobs.length === 0 });
+      }
+      if (url.pathname === "/api/import/from-url" && req.method === "POST") {
+        const setup = await setupStatus();
+        if (!setup.ready) {
+          return json(res, 503, { error: "Setup required: add your OpenAI API key and a model reference photo first." });
+        }
+        const input = await body(req);
+        const pageUrl = typeof input.url === "string" ? input.url.trim() : "";
+        if (!/^https?:\/\//i.test(pageUrl)) {
+          return json(res, 400, { error: "Enter a valid product page link (starting with http:// or https://)." });
+        }
+        let imageUrl;
+        try {
+          imageUrl = await extractProductImageUrl(pageUrl);
+        } catch (error) {
+          console.error(`[import/from-url] could not find an image on ${pageUrl}:`, error);
+          return json(res, 502, { error: error.message || "Could not find a product image on that page." });
+        }
+        let imageBytes;
+        try {
+          imageBytes = await downloadImage(imageUrl);
+        } catch (error) {
+          console.error(`[import/from-url] could not download ${imageUrl}:`, error);
+          return json(res, 502, { error: error.message || "Could not download the image from that page." });
+        }
+        try {
+          const jobs = await createJobsFromImageBytes(imageBytes, { singleItem: Boolean(input.singleItem) });
+          return json(res, 202, { jobs, noClothingDetected: jobs.length === 0 });
+        } catch (error) {
+          console.error(`[import/from-url] job creation failed for ${pageUrl}:`, error);
+          return json(res, 502, { error: error.message || "Could not process that image." });
+        }
       }
       if (url.pathname === API_ROOT && req.method === "GET") {
         const ids = await readdir(jobsDir).catch(() => []);
