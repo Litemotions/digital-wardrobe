@@ -645,10 +645,14 @@ function LookPreviewModal({ draft, items, busy, error, onSave, onDiscard, onRege
   );
 }
 
-function LookViewer({ look, items, onClose, onDelete, onRegenerate }) {
+function LookViewer({ look, items, onClose, onDelete, onRegenerate, onRename }) {
   const [regenPrompt, setRegenPrompt] = useState("");
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState("");
+  const [nameDraft, setNameDraft] = useState(look.name);
+  const [renameError, setRenameError] = useState("");
+
+  useEffect(() => { setNameDraft(look.name); }, [look.id, look.name]);
 
   const runRegenerate = async () => {
     if (!regenPrompt.trim()) { setRegenError("Describe what to change first."); return; }
@@ -663,11 +667,32 @@ function LookViewer({ look, items, onClose, onDelete, onRegenerate }) {
     }
   };
 
+  const commitRename = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === look.name) { setNameDraft(look.name); return; }
+    setRenameError("");
+    try {
+      await onRename(look.id, trimmed);
+    } catch (renameError) {
+      setRenameError(renameError.message);
+      setNameDraft(look.name);
+    }
+  };
+
   return (
     <div className="look-modal-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="look-modal" role="dialog" aria-modal="true" aria-label={look.name}>
         <img src={look.image} alt={look.name} />
-        <h2 style={{ margin: "0 0 10px", fontSize: 18 }}>{look.name}</h2>
+        <input
+          type="text"
+          aria-label="Look name"
+          value={nameDraft}
+          onChange={(event) => setNameDraft(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+          placeholder="Name this look"
+        />
+        {renameError && <p className="status error" style={{ margin: "-8px 0 14px" }}>{renameError}</p>}
         <p className="look-items-label">Includes</p>
         <LookItemsRow items={items} />
         <div className="regen-field">
@@ -926,6 +951,17 @@ export function App() {
     }
   };
 
+  const renameLook = async (id, name) => {
+    const response = await fetch(`${LOOKS_API}/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not rename that look.");
+    setLooks((current) => current.map((look) => look.id === id ? payload : look));
+  };
+
   const deleteLook = async (id) => {
     try {
       const response = await fetch(`${LOOKS_API}/${id}`, { method: "DELETE" });
@@ -1050,6 +1086,7 @@ export function App() {
           onClose={() => setViewingLookId(null)}
           onDelete={deleteLook}
           onRegenerate={regenerateLookImage}
+          onRename={renameLook}
         />
       )}
 

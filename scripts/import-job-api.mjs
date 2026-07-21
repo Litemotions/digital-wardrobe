@@ -846,6 +846,19 @@ export function wardrobeImportApi(options = {}) {
         return json(res, 200, { deleted: true, id });
       }
 
+      if (lookDeleteMatch && req.method === "PATCH") {
+        const id = lookDeleteMatch[1];
+        const input = await body(req);
+        const name = typeof input.name === "string" ? input.name.trim().slice(0, 120) : "";
+        if (!name) return json(res, 400, { error: "Give this look a name." });
+        const looks = await loadLooks();
+        const look = looks.find((item) => item.id === id);
+        if (!look) return json(res, 404, { error: "Look not found." });
+        const updated = { ...look, name };
+        await atomicJson(looksFile, looks.map((item) => item.id === id ? updated : item));
+        return json(res, 200, updated);
+      }
+
       const lookImageMatch = url.pathname.match(/^\/api\/import\/looks\/image\/([\w.-]+)$/i);
       if (lookImageMatch && req.method === "GET") {
         const file = path.join(looksAssetDir, path.basename(lookImageMatch[1]));
