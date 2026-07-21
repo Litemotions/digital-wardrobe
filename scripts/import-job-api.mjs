@@ -713,8 +713,23 @@ export function wardrobeImportApi(options = {}) {
       }
 
       if (url.pathname === LOOKS_ROOT && req.method === "GET") {
+        // Stored array order IS the display order (newest saved goes to the
+        // front, see the POST handler below) so the user's drag-to-reorder
+        // sticks instead of being overridden by a recency sort.
+        return json(res, 200, await loadLooks());
+      }
+
+      if (url.pathname === `${LOOKS_ROOT}/reorder` && req.method === "POST") {
+        const input = await body(req);
+        const ids = Array.isArray(input.ids) ? input.ids.filter((value) => typeof value === "string") : null;
+        if (!ids) return json(res, 400, { error: "Expected an ordered list of look ids." });
         const looks = await loadLooks();
-        return json(res, 200, [...looks].sort((a, b) => b.createdAt - a.createdAt));
+        const byId = new Map(looks.map((look) => [look.id, look]));
+        const reordered = ids.map((id) => byId.get(id)).filter(Boolean);
+        const remaining = looks.filter((look) => !ids.includes(look.id));
+        const next = [...reordered, ...remaining];
+        await atomicJson(looksFile, next);
+        return json(res, 200, next);
       }
 
       if (url.pathname === `${LOOKS_ROOT}/generate` && req.method === "POST") {
@@ -831,7 +846,10 @@ export function wardrobeImportApi(options = {}) {
           image: `${LOOKS_ASSET_ROOT}/${id}.png`,
           createdAt: Date.now(),
         };
-        await atomicJson(looksFile, [...looks.filter((look) => look.id !== id), record]);
+        // Prepend rather than append: with no more createdAt sort on GET, array
+        // order is the whole story, and a newly-saved look should show up
+        // first (where "newest" always used to appear) until dragged elsewhere.
+        await atomicJson(looksFile, [record, ...looks.filter((look) => look.id !== id)]);
         return json(res, 200, record);
       }
 

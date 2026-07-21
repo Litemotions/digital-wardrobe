@@ -719,6 +719,82 @@ function LookViewer({ look, items, onClose, onDelete, onRegenerate, onRename }) 
   );
 }
 
+// Saved-looks grid with drag-to-reorder. Uses pointer events (not native
+// HTML5 drag-and-drop) so it works the same with a mouse or a finger — cards
+// swap live as the dragged one crosses another, and the new order is only
+// reported to the parent once the drag ends. `order` mirrors the `looks`
+// prop but is kept as its own state so a drag in progress isn't clobbered by
+// a prop update (e.g. from an unrelated poll/refresh).
+function LooksGrid({ looks, onOpen, onReorder }) {
+  const [order, setOrder] = useState(looks);
+  const dragRef = useRef(null);
+  const suppressClickRef = useRef(false);
+
+  useEffect(() => {
+    if (!dragRef.current) setOrder(looks);
+  }, [looks]);
+
+  const handlePointerDown = (event, id) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    dragRef.current = { id, pointerId: event.pointerId, moved: false };
+  };
+
+  const handlePointerMove = (event) => {
+    const dragging = dragRef.current;
+    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const card = target?.closest("[data-look-id]");
+    if (!card) return;
+    const overId = card.dataset.lookId;
+    if (overId === dragging.id) return;
+    dragging.moved = true;
+    setOrder((current) => {
+      const fromIndex = current.findIndex((look) => look.id === dragging.id);
+      const toIndex = current.findIndex((look) => look.id === overId);
+      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return current;
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const finishDrag = () => {
+    const dragging = dragRef.current;
+    dragRef.current = null;
+    if (dragging?.moved) {
+      suppressClickRef.current = true;
+      onReorder(order.map((look) => look.id));
+    }
+  };
+
+  const handleClick = (id) => {
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+    onOpen(id);
+  };
+
+  return (
+    <section className="looks-grid" aria-label="Saved looks">
+      {order.map((look) => (
+        <button
+          key={look.id}
+          type="button"
+          data-look-id={look.id}
+          className="look-card"
+          onPointerDown={(event) => handlePointerDown(event, look.id)}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onClick={() => handleClick(look.id)}
+        >
+          <img src={look.image} alt={look.name} loading="lazy" draggable={false} />
+          <span className="look-name">{look.name}</span>
+        </button>
+      ))}
+    </section>
+  );
+}
+
 export function App() {
   const [items, setItems] = useState([]);
   const [activeType, setActiveType] = useState("all");
@@ -962,6 +1038,25 @@ export function App() {
     setLooks((current) => current.map((look) => look.id === id ? payload : look));
   };
 
+  const reorderLooks = async (orderedIds) => {
+    setLooks((current) => {
+      const byId = new Map(current.map((look) => [look.id, look]));
+      const reordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+      const remaining = current.filter((look) => !orderedIds.includes(look.id));
+      return [...reordered, ...remaining];
+    });
+    try {
+      const response = await fetch(`${LOOKS_API}/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: orderedIds }),
+      });
+      if (!response.ok) throw new Error("Could not save the new order.");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
   const deleteLook = async (id) => {
     try {
       const response = await fetch(`${LOOKS_API}/${id}`, { method: "DELETE" });
@@ -1039,14 +1134,7 @@ export function App() {
           <>
             {!looks.length && <p className="status empty">No looks yet. Tap "Create a look" in your wardrobe, pick a few pieces, and generate one.</p>}
             {!!looks.length && (
-              <section className="looks-grid" aria-label="Saved looks">
-                {looks.map((look) => (
-                  <button key={look.id} type="button" className="look-card" onClick={() => setViewingLookId(look.id)}>
-                    <img src={look.image} alt={look.name} loading="lazy" />
-                    <span className="look-name">{look.name}</span>
-                  </button>
-                ))}
-              </section>
+              <LooksGrid looks={looks} onOpen={setViewingLookId} onReorder={reorderLooks} />
             )}
           </>
         )}
