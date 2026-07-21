@@ -592,6 +592,37 @@ button { font: inherit; }
 .color-field,
 .details-field { grid-column: 1 / -1; }
 
+.regen-field {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.regen-field label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.regen-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, .18);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.regen-field textarea:focus { border-color: var(--ink); outline: none; }
+.regen-field textarea:disabled { opacity: .6; }
+
 .colors-editor {
   display: grid;
   grid-template-columns: 1fr 1fr;

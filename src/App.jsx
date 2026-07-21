@@ -344,7 +344,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete }) {
+function ItemViewer({ item, onClose, onSave, onDelete, onRegenerate }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -355,6 +355,9 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
   const [shaking, setShaking] = useState(false);
   const [closeBlocked, setCloseBlocked] = useState(false);
+  const [regenPrompt, setRegenPrompt] = useState("");
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenError, setRegenError] = useState("");
   const type = TYPE_MAP[item.part]?.singular || "Wardrobe item";
   const hasModeledImage = Boolean(item.modeledImage);
   const pieceRotation = useMemo(() => {
@@ -434,6 +437,19 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
     onSave({ ...item, ...draft, name: draft.name.trim(), tags: draft.tags.map((tag) => tag.trim()).filter(Boolean) });
     setSampling(null);
     setSampleStatus("Changes saved.");
+  };
+
+  const runRegenerate = async () => {
+    if (!regenPrompt.trim()) { setRegenError("Describe what to change first."); return; }
+    setRegenBusy(true); setRegenError("");
+    try {
+      await onRegenerate(item.id, regenPrompt.trim());
+      setRegenPrompt("");
+    } catch (regenerateError) {
+      setRegenError(regenerateError.message);
+    } finally {
+      setRegenBusy(false);
+    }
   };
 
   const handleImageLoad = (event) => {
@@ -521,6 +537,22 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
           setSampling={setSampling}
           sampleStatus={sampleStatus}
         />
+
+        <div className="regen-field">
+          <label htmlFor={`regen-${item.id}`}>Fix the image</label>
+          <textarea
+            id={`regen-${item.id}`}
+            value={regenPrompt}
+            onChange={(event) => setRegenPrompt(event.target.value)}
+            placeholder="e.g. the ring has a flat top, not fully rounded"
+            rows={2}
+            disabled={regenBusy}
+          />
+          {regenError && <p className="status error" style={{ margin: "6px 0 0" }}>{regenError}</p>}
+          <button type="button" className="secondary-button" disabled={regenBusy} onClick={runRegenerate} style={{ marginTop: 8 }}>
+            {regenBusy ? "Regenerating…" : "Regenerate image"}
+          </button>
+        </div>
 
         {closeBlocked && <p className="unsaved-notice" role="status">Save or cancel changes before closing.</p>}
 
@@ -692,6 +724,17 @@ export function App() {
   const saveItem = (updatedItem) => {
     setItems((current) => current.map((item) => item.id === updatedItem.id ? updatedItem : item));
     persistEdit(updatedItem);
+  };
+
+  const regenerateItemImage = async (id, prompt) => {
+    const response = await fetch(`/api/import/wardrobe/${id}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not regenerate that image.");
+    setItems((current) => current.map((item) => item.id === id ? { ...item, image: payload.image, thumbnail: payload.image } : item));
   };
 
   const deleteItem = async (id) => {
@@ -910,7 +953,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && !selectMode && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && !selectMode && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onRegenerate={regenerateItemImage} />}
 
       {selectMode && (
         <SelectionBar

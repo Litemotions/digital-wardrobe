@@ -768,6 +768,59 @@ export function wardrobeImportApi(options = {}) {
         return res.end(await readFile(file));
       }
 
+      // Regenerate an already-saved wardrobe item's garment image with a
+      // styling correction (e.g. "the ring has a flat top, not fully
+      // rounded"). Uses the item's current clean cutout as the reference —
+      // the original uncropped photo is gone by the time an item is saved —
+      // so this is only useful with an actual instruction, not a blank retry.
+      const wardrobeRegenerateMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})\/regenerate$/i);
+      if (wardrobeRegenerateMatch && req.method === "POST") {
+        const id = wardrobeRegenerateMatch[1];
+        const setup = await setupStatus();
+        if (!setup.ready) return json(res, 503, { error: "Setup required: add your OpenAI API key first." });
+        const records = await loadImported();
+        const record = records.find((item) => item.id === id);
+        if (!record) return json(res, 404, { error: "Wardrobe item not found." });
+        const input = await body(req);
+        const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 500) : "";
+        if (!prompt) return json(res, 400, { error: "Describe what to change, e.g. \"the ring has a flat top, not fully rounded\"." });
+
+        const garmentFile = path.join(libraryAssetDir, path.basename(new URL(record.image, "http://localhost").pathname));
+        let currentImage;
+        try {
+          currentImage = await readFile(garmentFile);
+        } catch (error) {
+          console.error(`[wardrobe/regenerate] could not read ${garmentFile}:`, error);
+          return json(res, 404, { error: "Could not read this item's current image." });
+        }
+
+        const key = setting("OPENAI_API_KEY");
+        const chromaKeyUsed = chooseChromaKey(record.color);
+        const basePrompt = buildGarmentPrompt(record, chromaKeyUsed);
+        const fullPrompt = `${basePrompt}\nUser regeneration direction: ${prompt}`;
+        const model = setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2"));
+        const quality = setting("OPENAI_IMAGE_QUALITY", "high");
+        try {
+          let bytes = await openAIEdit({
+            key,
+            baseUrl: apiBaseUrl(),
+            model,
+            quality,
+            size: "1024x1024",
+            images: [{ data: currentImage, name: "current.png" }],
+            prompt: fullPrompt,
+          });
+          bytes = await removeChromaBackground(bytes, chromaKeyUsed);
+          await writeFile(garmentFile, bytes);
+        } catch (error) {
+          console.error(`[wardrobe/regenerate] OpenAI call failed (model=${model}, quality=${quality}) for ${id}:`, error);
+          return json(res, 502, { error: error.message || "Could not regenerate that image." });
+        }
+        // Cache-bust: the file is served with a 1-year immutable cache header
+        // and its filename never changes, so the client needs a new URL to
+        // actually see the update.
+        return json(res, 200, { id, image: `${LIBRARY_ASSET_ROOT}/${path.basename(garmentFile)}?v=${Date.now()}` });
+      }
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
         const id = wardrobeDeleteMatch[1];
