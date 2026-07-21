@@ -905,8 +905,14 @@ export function wardrobeImportApi(options = {}) {
         }
         // Cache-bust: the file is served with a 1-year immutable cache header
         // and its filename never changes, so the client needs a new URL to
-        // actually see the update.
-        return json(res, 200, { id, image: `${LIBRARY_ASSET_ROOT}/${path.basename(garmentFile)}?v=${Date.now()}` });
+        // actually see the update. Persist that busted URL too, otherwise a
+        // page refresh re-fetches the stale un-versioned URL from disk and
+        // the browser serves the old cached bytes for it.
+        const bustedImage = `${LIBRARY_ASSET_ROOT}/${path.basename(garmentFile)}?v=${Date.now()}`;
+        const freshRecords = await loadImported();
+        const nextRecords = freshRecords.map((item) => item.id === id ? { ...item, image: bustedImage, thumbnail: bustedImage } : item);
+        await atomicJson(importedFile, nextRecords);
+        return json(res, 200, { id, image: bustedImage });
       }
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
